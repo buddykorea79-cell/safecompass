@@ -1,0 +1,14 @@
+{
+  "name": "안전나침판 Safety Compass",
+  "short_name": "안전나침판",
+  "description": "내 위치 기준 재난 상황, 행동요령, 안전지도를 한 곳에서.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f7f9",
+  "theme_color": "#177e77",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "maskable" }
+  ]
+}
