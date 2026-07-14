@@ -4,13 +4,33 @@ import { AlertTriangle, ArrowRight, MapPin } from "lucide-react";
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type {
+  DisasterLevel,
   DisasterMessage,
   DisasterSituation,
   Shelter,
   WeatherAlert,
 } from "@/types";
+import { LEVEL_NAMES } from "@/types";
 import KakaoMap, { type MapMarkerItem } from "./KakaoMap";
 import MarkerSheet from "./MarkerSheet";
+
+const SITUATION_LEVELS: DisasterLevel[] = [1, 2, 3, 4, 5];
+
+const ACTIVE_LEVEL_DOT_CLASS: Record<DisasterLevel, string> = {
+  1: "bg-level-normal ring-level-normal/20",
+  2: "bg-level-interest ring-level-interest/20",
+  3: "bg-level-caution ring-level-caution/20",
+  4: "bg-level-alert ring-level-alert/20",
+  5: "bg-level-severe ring-level-severe/20",
+};
+
+const ACTIVE_LEVEL_TEXT_CLASS: Record<DisasterLevel, string> = {
+  1: "text-level-normal",
+  2: "text-level-interest",
+  3: "text-level-caution",
+  4: "text-level-alert",
+  5: "text-level-severe",
+};
 
 interface NationwideNotice {
   id: string;
@@ -146,48 +166,19 @@ export default function HomeSafetyMap({
   return (
     <section
       id="safety-info"
-      aria-labelledby="home-safety-map-title"
-      className="mx-5 mt-3 scroll-mt-16 overflow-hidden rounded-2xl bg-white shadow-card"
+      aria-labelledby="home-situation-title"
+      className="mx-5 mt-4 scroll-mt-16 overflow-hidden rounded-2xl bg-white shadow-card"
     >
-      <header className="flex items-center justify-between gap-3 px-4 py-3">
-        <div className="min-w-0">
-          <h2
-            id="home-safety-map-title"
-            className="flex items-center gap-1.5 text-sm font-bold text-slate-700"
-          >
-            <MapPin size={16} className="shrink-0 text-brand-600" aria-hidden="true" />
-            내 주변 안전지도
-          </h2>
-          <p className="mt-0.5 truncate text-[11px] text-slate-400">{regionLabel}</p>
-        </div>
-        <Link
-          href="/map"
-          className="flex shrink-0 items-center gap-1 text-xs font-semibold text-brand-700"
-        >
-          크게 보기 <ArrowRight size={13} aria-hidden="true" />
-        </Link>
-      </header>
-
-      <div className="h-64 border-y border-slate-100">
-        <KakaoMap
-          center={center}
-          markers={markers}
-          situationLevel={situation?.level}
-          situationCenter={center}
-          situationLabel={regionLabel}
-          showSituation
-          onMarkerClick={setSelected}
-        />
-      </div>
-
-      <div className="px-4 py-3">
+      <div className="px-4 py-4" aria-busy={loading}>
         <div className="flex items-start gap-2.5">
           <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-brand-50 text-brand-700">
             <AlertTriangle size={14} aria-hidden="true" />
           </span>
           <div className="min-w-0 flex-1">
             <div className="flex items-center justify-between gap-2">
-              <h3 className="text-xs font-bold text-slate-700">현재 상황</h3>
+              <h2 id="home-situation-title" className="text-sm font-bold text-slate-700">
+                현재 상황
+              </h2>
               {situation && (
                 <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">
                   {situation.level_name}
@@ -217,6 +208,42 @@ export default function HomeSafetyMap({
           </div>
         </div>
 
+        <ol
+          className="mt-3 grid grid-cols-5 gap-1 border-t border-slate-100 pt-3"
+          aria-label={
+            situation
+              ? `재난 상황 5단계. 현재 ${situation.level_name} 단계`
+              : "재난 상황 5단계"
+          }
+        >
+          {SITUATION_LEVELS.map((level) => {
+            const active = situation?.level === level;
+            return (
+              <li
+                key={level}
+                className="flex min-w-0 flex-col items-center gap-1"
+                aria-current={active ? "step" : undefined}
+              >
+                <span
+                  className={`h-2.5 w-2.5 rounded-full ring-4 ${
+                    active
+                      ? ACTIVE_LEVEL_DOT_CLASS[level]
+                      : "bg-slate-200 ring-slate-100"
+                  }`}
+                  aria-hidden="true"
+                />
+                <span
+                  className={`text-[10px] font-semibold ${
+                    active ? ACTIVE_LEVEL_TEXT_CLASS[level] : "text-slate-400"
+                  }`}
+                >
+                  {level}. {LEVEL_NAMES[level]}
+                </span>
+              </li>
+            );
+          })}
+        </ol>
+
         {notices.map((notice) => (
           <div
             key={notice.id}
@@ -230,6 +257,39 @@ export default function HomeSafetyMap({
             </p>
           </div>
         ))}
+      </div>
+
+      <div className="border-t border-slate-100">
+        <header className="flex items-center justify-between gap-3 px-4 py-3">
+          <div className="min-w-0">
+            <h2
+              id="home-safety-map-title"
+              className="flex items-center gap-1.5 text-sm font-bold text-slate-700"
+            >
+              <MapPin size={16} className="shrink-0 text-brand-600" aria-hidden="true" />
+              내 주변 안전지도
+            </h2>
+            <p className="mt-0.5 truncate text-[11px] text-slate-400">{regionLabel}</p>
+          </div>
+          <Link
+            href="/map"
+            className="flex shrink-0 items-center gap-1 rounded-md text-xs font-semibold text-brand-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+          >
+            크게 보기 <ArrowRight size={13} aria-hidden="true" />
+          </Link>
+        </header>
+
+        <div className="h-64 border-t border-slate-100">
+          <KakaoMap
+            center={center}
+            markers={markers}
+            situationLevel={situation?.level}
+            situationCenter={center}
+            situationLabel={regionLabel}
+            showSituation
+            onMarkerClick={setSelected}
+          />
+        </div>
       </div>
 
       {selected && <MarkerSheet item={selected} onClose={() => setSelected(null)} />}

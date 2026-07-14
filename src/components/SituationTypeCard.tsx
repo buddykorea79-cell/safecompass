@@ -33,8 +33,12 @@ export default function SituationTypeCard({ disasterTypes }: { disasterTypes: st
           <Link
             key={g.id}
             href={`/guide/${encodeURIComponent(g.id)}`}
-            className="rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-card"
+            className="flex items-center gap-1.5 rounded-full bg-white px-3 py-1.5 text-xs font-medium text-slate-600 shadow-card"
           >
+            <span
+              className={`h-2 w-2 rounded-full ${g.category === "natural" ? "bg-sky-500" : "bg-orange-500"}`}
+              aria-hidden="true"
+            />
             {g.name}
           </Link>
         ))}

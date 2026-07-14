@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, AlertTriangle, CloudLightning, Sparkles } from "lucide-react";
-import { useLocationStore } from "@/store/useLocationStore";
 import { ALERTS_CACHE_KEY } from "@/lib/alertsCache";
 import type { UnifiedAlert } from "@/components/AlertListItem";
 
@@ -16,7 +15,6 @@ function formatTime(iso: string): string {
 export default function AlertDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
-  const location = useLocationStore((s) => s.location);
   const [alert, setAlert] = useState<UnifiedAlert | null | undefined>(undefined);
   const [summary, setSummary] = useState<string | null>(null);
   const [showSummary, setShowSummary] = useState(false);
@@ -24,25 +22,36 @@ export default function AlertDetailPage() {
 
   useEffect(() => {
     const id = decodeURIComponent(params.id);
-    const cached = sessionStorage.getItem(ALERTS_CACHE_KEY);
+    let cached: string | null = null;
+    try {
+      cached = sessionStorage.getItem(ALERTS_CACHE_KEY);
+    } catch {
+      // 저장 공간을 사용할 수 없으면 API에서 상세를 다시 찾는다.
+    }
     if (cached) {
-      const list: UnifiedAlert[] = JSON.parse(cached);
-      const found = list.find((a) => `${a.kind}-${a.id}` === id);
-      if (found) {
-        setAlert(found);
-        return;
+      try {
+        const list: UnifiedAlert[] = JSON.parse(cached);
+        const found = list.find((a) => `${a.kind}-${a.id}` === id);
+        if (found) {
+          setAlert(found);
+          return;
+        }
+      } catch {
+        try {
+          sessionStorage.removeItem(ALERTS_CACHE_KEY);
+        } catch {
+          // 손상된 캐시를 지우지 못해도 API 조회는 계속한다.
+        }
       }
     }
-    fetch(`/api/alerts?region=${encodeURIComponent(location.label)}`)
+    const query = new URLSearchParams({ id, pageSize: "1" });
+    fetch(`/api/alerts?${query.toString()}`)
       .then((res) => res.json())
       .then((json) => {
-        const messages: UnifiedAlert[] = (json.messages ?? []).map((m: any) => ({ kind: "message" as const, ...m }));
-        const weather: UnifiedAlert[] = (json.alerts ?? []).map((a: any) => ({ kind: "weather" as const, ...a }));
-        const found = [...messages, ...weather].find((a) => `${a.kind}-${a.id}` === id);
+        const found = ((json.items ?? []) as UnifiedAlert[]).find((item) => `${item.kind}-${item.id}` === id);
         setAlert(found ?? null);
       })
       .catch(() => setAlert(null));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params.id]);
 
   async function toggleSummary() {

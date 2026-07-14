@@ -2,6 +2,12 @@
 
 import { RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  kakaoMapCreateError,
+  kakaoMapErrorView,
+  loadKakaoMapSdk,
+  type KakaoMapErrorView,
+} from "@/lib/kakaoMapSdk";
 import type { DisasterLevel, Place, Shelter } from "@/types";
 
 declare global {
@@ -23,123 +29,6 @@ const LEVEL_HEX: Record<DisasterLevel, string> = {
 };
 
 const KAKAO_JS_KEY = (process.env.NEXT_PUBLIC_KAKAO_JS_KEY ?? "").trim();
-const KAKAO_SDK_SCRIPT_ID = "safecompass-kakao-map-sdk";
-const KAKAO_SDK_TIMEOUT_MS = 10_000;
-
-let sdkLoadingPromise: Promise<void> | null = null;
-
-function kakaoMapsReady(): boolean {
-  return typeof window.kakao?.maps?.Map === "function";
-}
-
-function loadKakaoSdk(): Promise<void> {
-  if (typeof window === "undefined") {
-    return Promise.reject(new Error("브라우저에서만 지도를 불러올 수 있습니다."));
-  }
-  if (!KAKAO_JS_KEY) {
-    return Promise.reject(
-      new Error("NEXT_PUBLIC_KAKAO_JS_KEY가 설정되지 않아 지도를 표시할 수 없습니다.")
-    );
-  }
-  if (kakaoMapsReady()) return Promise.resolve();
-  if (sdkLoadingPromise) return sdkLoadingPromise;
-
-  const attempt = new Promise<void>((resolve, reject) => {
-    let settled = false;
-    let timeoutId: number | undefined;
-    let script = document.getElementById(KAKAO_SDK_SCRIPT_ID) as HTMLScriptElement | null;
-
-    if (script?.dataset.loadState === "error") {
-      script.remove();
-      script = null;
-    }
-
-    const cleanup = () => {
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
-      script?.removeEventListener("load", handleLoad);
-      script?.removeEventListener("error", handleError);
-    };
-
-    const succeed = () => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      resolve();
-    };
-
-    const fail = (message: string) => {
-      if (settled) return;
-      settled = true;
-      if (script) script.dataset.loadState = "error";
-      cleanup();
-      reject(new Error(message));
-    };
-
-    const initialize = () => {
-      if (kakaoMapsReady()) {
-        succeed();
-        return;
-      }
-      if (typeof window.kakao?.maps?.load !== "function") {
-        fail("카카오맵 SDK 초기화 함수를 찾지 못했습니다.");
-        return;
-      }
-      try {
-        window.kakao.maps.load(() => {
-          if (kakaoMapsReady()) succeed();
-          else fail("카카오맵 SDK가 올바르게 초기화되지 않았습니다.");
-        });
-      } catch {
-        fail("카카오맵 SDK 초기화 중 오류가 발생했습니다.");
-      }
-    };
-
-    function handleLoad() {
-      if (script) script.dataset.loadState = "loaded";
-      initialize();
-    }
-
-    function handleError() {
-      fail("카카오맵 SDK를 내려받지 못했습니다. 네트워크와 등록 도메인을 확인해 주세요.");
-    }
-
-    timeoutId = window.setTimeout(() => {
-      fail(
-        "카카오맵 초기화 시간이 초과되었습니다. JavaScript 키와 카카오 콘솔의 등록 도메인을 확인해 주세요."
-      );
-    }, KAKAO_SDK_TIMEOUT_MS);
-
-    if (script) {
-      script.addEventListener("load", handleLoad, { once: true });
-      script.addEventListener("error", handleError, { once: true });
-      if (script.dataset.loadState === "loaded" || window.kakao?.maps?.load) initialize();
-      return;
-    }
-
-    // 이전 화면이나 구버전 로더가 SDK 태그를 먼저 추가한 경우에도 새 태그를 중복 삽입하지 않는다.
-    if (typeof window.kakao?.maps?.load === "function") {
-      initialize();
-      return;
-    }
-
-    script = document.createElement("script");
-    script.id = KAKAO_SDK_SCRIPT_ID;
-    script.src = `https://dapi.kakao.com/v2/maps/sdk.js?appkey=${encodeURIComponent(
-      KAKAO_JS_KEY
-    )}&autoload=false&libraries=services`;
-    script.async = true;
-    script.dataset.loadState = "loading";
-    script.addEventListener("load", handleLoad, { once: true });
-    script.addEventListener("error", handleError, { once: true });
-    document.head.appendChild(script);
-  });
-
-  sdkLoadingPromise = attempt.catch((error: unknown) => {
-    sdkLoadingPromise = null;
-    throw error;
-  });
-  return sdkLoadingPromise;
-}
 
 export default function KakaoMap({
   center,
@@ -174,7 +63,7 @@ export default function KakaoMap({
   const pickingRef = useRef(picking);
   const onCenterSearchRef = useRef(onCenterSearch);
   const [ready, setReady] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<KakaoMapErrorView | null>(null);
   const [showResearch, setShowResearch] = useState(false);
   const [pickCenter, setPickCenter] = useState(center);
   const [retryToken, setRetryToken] = useState(0);
@@ -190,14 +79,18 @@ export default function KakaoMap({
 
     setReady(false);
     setError(null);
-    loadKakaoSdk()
+    loadKakaoMapSdk(KAKAO_JS_KEY)
       .then(() => {
         if (cancelled || !containerRef.current) return;
         const currentCenter = centerRef.current;
-        map = new window.kakao.maps.Map(containerRef.current, {
-          center: new window.kakao.maps.LatLng(currentCenter.lat, currentCenter.lng),
-          level: 5,
-        });
+        try {
+          map = new window.kakao.maps.Map(containerRef.current, {
+            center: new window.kakao.maps.LatLng(currentCenter.lat, currentCenter.lng),
+            level: 5,
+          });
+        } catch {
+          throw kakaoMapCreateError();
+        }
         mapRef.current = map;
         handleDragEnd = () => {
           const next = map.getCenter();
@@ -207,12 +100,15 @@ export default function KakaoMap({
         window.kakao.maps.event.addListener(map, "dragend", handleDragEnd);
         setPickCenter(currentCenter);
         setReady(true);
+        window.requestAnimationFrame(() => {
+          if (cancelled || mapRef.current !== map) return;
+          map.relayout();
+          map.setCenter(new window.kakao.maps.LatLng(currentCenter.lat, currentCenter.lng));
+        });
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
-        setError(
-          cause instanceof Error ? cause.message : "카카오맵을 불러오지 못했습니다."
-        );
+        setError(kakaoMapErrorView(cause));
       });
 
     return () => {
@@ -311,7 +207,15 @@ export default function KakaoMap({
       <div className="flex h-full min-h-[240px] flex-col items-center justify-center gap-3 bg-slate-100 px-8 text-center">
         <div>
           <p className="text-sm font-semibold text-slate-600">지도를 불러올 수 없습니다</p>
-          <p className="mt-1 text-xs leading-relaxed text-slate-400">{error}</p>
+          <p className="mt-1 text-xs leading-relaxed text-slate-500">{error.summary}</p>
+          <ul className="mt-2 space-y-1 text-left text-[10px] leading-relaxed text-slate-400">
+            {error.checks.map((check) => (
+              <li key={check}>· {check}</li>
+            ))}
+          </ul>
+          <p className="mt-2 text-[9px] font-medium uppercase tracking-wide text-slate-300">
+            진단 코드 {error.code}
+          </p>
         </div>
         <button
           type="button"

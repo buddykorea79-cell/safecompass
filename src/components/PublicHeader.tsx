@@ -1,20 +1,15 @@
 "use client";
 
-import clsx from "clsx";
-import { Bell, BookOpen, Compass, MapPin, ShieldCheck } from "lucide-react";
+import { ChevronDown, Compass, MapPin } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
+import { useLocationStore } from "@/store/useLocationStore";
 import LocationSheet from "./LocationSheet";
-
-const LINKS = [
-  { href: "/#safety-info", label: "안전정보", icon: ShieldCheck, path: "/" },
-  { href: "/alerts", label: "공식알림", icon: Bell, path: "/alerts" },
-  { href: "/guide", label: "행동요령", icon: BookOpen, path: "/guide" },
-] as const;
 
 export default function PublicHeader() {
   const pathname = usePathname();
+  const location = useLocationStore((state) => state.location);
   const [locationOpen, setLocationOpen] = useState(false);
 
   if (pathname?.startsWith("/admin")) return null;
@@ -34,46 +29,19 @@ export default function PublicHeader() {
             <span className="text-[13px] min-[380px]:text-[15px]">안전나침판</span>
           </Link>
 
-          <nav
-            aria-label="상단 주요 메뉴"
-            className="ml-auto min-w-0"
+          <button
+            type="button"
+            onClick={() => setLocationOpen(true)}
+            className="ml-auto flex min-w-0 max-w-[58%] items-center gap-1.5 rounded-xl px-2 py-2 text-left text-slate-700 transition-colors hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-2"
+            aria-label={`현재 위치 ${location.label}. 위치 변경`}
+            aria-expanded={locationOpen}
           >
-            <div className="flex items-center">
-              <button
-                type="button"
-                onClick={() => setLocationOpen(true)}
-                className={clsx(
-                  "flex h-12 min-w-[40px] flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[8px] font-semibold transition-colors min-[380px]:min-w-[46px] min-[380px]:px-1 min-[380px]:text-[9px]",
-                  locationOpen
-                    ? "bg-brand-50 text-brand-700"
-                    : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                )}
-                aria-expanded={locationOpen}
-              >
-                <MapPin size={13} aria-hidden="true" />
-                위치정보
-              </button>
-              {LINKS.map(({ href, label, icon: Icon, path }) => {
-                const active = path === "/" ? pathname === "/" : pathname?.startsWith(path);
-                return (
-                  <Link
-                    key={href}
-                    href={href}
-                    aria-current={active ? "page" : undefined}
-                    className={clsx(
-                      "flex h-12 min-w-[40px] flex-col items-center justify-center gap-0.5 rounded-lg px-0.5 text-[8px] font-semibold transition-colors min-[380px]:min-w-[46px] min-[380px]:px-1 min-[380px]:text-[9px]",
-                      active
-                        ? "bg-brand-50 text-brand-700"
-                        : "text-slate-500 hover:bg-slate-50 hover:text-slate-700"
-                    )}
-                  >
-                    <Icon size={13} aria-hidden="true" />
-                    {label}
-                  </Link>
-                );
-              })}
-            </div>
-          </nav>
+            <MapPin size={16} className="shrink-0 text-brand-600" aria-hidden="true" />
+            <span className="truncate text-xs font-semibold min-[380px]:text-sm">
+              {location.label}
+            </span>
+            <ChevronDown size={14} className="shrink-0 text-slate-400" aria-hidden="true" />
+          </button>
         </div>
       </header>
       <LocationSheet open={locationOpen} onClose={() => setLocationOpen(false)} />

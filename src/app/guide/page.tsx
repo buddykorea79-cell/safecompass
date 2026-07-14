@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { useLocationStore } from "@/store/useLocationStore";
 import SituationTypeCard from "@/components/SituationTypeCard";
+import DailyGuideRecommendationCard from "@/components/DailyGuideRecommendationCard";
 import GuideChat from "@/components/GuideChat";
 import GuideTypeGrid from "@/components/GuideTypeGrid";
 
@@ -28,6 +29,12 @@ function GuidePageInner() {
   return (
     <main className="min-h-screen px-5 pt-5 pb-8">
       <h1 className="mb-4 text-lg font-bold text-slate-800">행동요령</h1>
+      <DailyGuideRecommendationCard
+        regionCode={location.region_code}
+        regionLabel={location.label}
+        lat={location.lat}
+        lng={location.lng}
+      />
       <SituationTypeCard disasterTypes={disasterTypes} />
       <div className="mb-5">
         <GuideChat />

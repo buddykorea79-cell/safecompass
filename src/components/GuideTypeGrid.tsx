@@ -9,10 +9,10 @@ type GuideSummary = { id: string; category: "natural" | "social"; name: string }
 
 type Tab = "all" | "natural" | "social";
 
-// 자연재난/사회재난을 아이콘 없이 색상으로 구분한다.
-const CATEGORY_STYLE: Record<GuideSummary["category"], { card: string; dot: string; label: string }> = {
-  natural: { card: "border-sky-200 bg-sky-50 text-sky-900", dot: "bg-sky-500", label: "자연재난" },
-  social: { card: "border-orange-200 bg-orange-50 text-orange-900", dot: "bg-orange-500", label: "사회재난" },
+// 카드 전체를 칠하지 않고 작은 점으로만 자연재난/사회재난을 구분한다.
+const CATEGORY_STYLE: Record<GuideSummary["category"], { dot: string; label: string }> = {
+  natural: { dot: "bg-sky-500", label: "자연재난" },
+  social: { dot: "bg-orange-500", label: "사회재난" },
 };
 
 export default function GuideTypeGrid({ highlightIds = [] as string[] }: { highlightIds?: string[] }) {
@@ -114,12 +114,12 @@ export default function GuideTypeGrid({ highlightIds = [] as string[] }: { highl
                 key={g.id}
                 href={`/guide/${encodeURIComponent(g.id)}`}
                 className={clsx(
-                  "flex min-h-[3.5rem] items-center rounded-2xl border px-4 py-3 shadow-card",
-                  style.card,
+                  "flex min-h-[3.5rem] items-center gap-2.5 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-slate-800 shadow-card",
                   highlightIds.includes(g.id) && "ring-2 ring-brand-400"
                 )}
                 aria-label={`${g.name} (${style.label})`}
               >
+                <span className={clsx("h-2.5 w-2.5 shrink-0 rounded-full", style.dot)} aria-hidden="true" />
                 <span className="text-[16px] font-semibold leading-snug">{g.name}</span>
               </Link>
             );

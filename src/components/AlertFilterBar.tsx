@@ -23,12 +23,12 @@ export default function AlertFilterBar({
   onRegionChange: (value: string) => void;
 }) {
   return (
-    <div className="sticky top-0 z-10 bg-[#f6f7f9] px-5 pt-5 pb-3">
+    <div className="sticky top-14 z-10 bg-[#f6f7f9] px-5 pt-5 pb-3">
       <h1 className="mb-3 text-lg font-bold text-slate-800">공식 알림</h1>
       <input
         value={region}
         onChange={(e) => onRegionChange(e.target.value)}
-        placeholder="지역으로 검색 (예: 세종특별자치시)"
+        placeholder="지역 검색 · 비워 두면 전국 최신 알림"
         className="mb-3 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-brand-400 focus:outline-none"
       />
       <div className="flex flex-wrap gap-2">

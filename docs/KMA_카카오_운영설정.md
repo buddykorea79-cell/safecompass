@@ -51,20 +51,37 @@ API허브 마이페이지에서 인증키 상태가 **정상**인 것과 개별 
 3. **앱 > 플랫폼 키 > JavaScript 키 > JavaScript SDK 도메인**에 `http://localhost:3000`과 실제 운영 출처(예: `https://safecompass.example.com`)를 각각 등록합니다.
 4. `NEXT_PUBLIC_KAKAO_JS_KEY`는 Next.js 빌드 시 클라이언트 번들에 포함되므로 Vercel에서 값을 추가·수정한 뒤 반드시 새로 배포합니다.
 
-참고: [카카오맵 시작하기](https://developers.kakao.com/docs/ko/kakaomap/common), [JavaScript SDK 도메인 등록](https://developers.kakao.com/docs/ko/javascript/getting-started)
+참고: [카카오맵 시작하기](https://developers.kakao.com/docs/ko/kakaomap/common), [카카오맵 동적 SDK 로딩](https://apis.map.kakao.com/web/documentation/), [JavaScript 키·SDK 도메인 설정](https://developers.kakao.com/docs/ko/app-setting/app)
+
+### `window.kakao=window.kakao||{}`로 시작하는 응답의 의미
+
+`https://dapi.kakao.com/v2/maps/sdk.js` 요청에서 `window.kakao=window.kakao||{}`로 시작하는 압축 JavaScript가 반환되는 것은 오류가 아니라 정상적인 **SDK 부트스트랩 응답**입니다. 이 부트스트랩이 `t1.daumcdn.net`의 지도 본체를 이어서 내려받고 `kakao.maps.load()` 콜백을 실행해야 실제 지도를 만들 수 있습니다.
+
+앱은 이 긴 응답 본문을 오류 메시지로 출력하지 않습니다. 지도 본체가 준비되지 않으면 다음 순서로 원인을 확인할 수 있는 짧은 메시지를 표시합니다.
+
+| 화면 메시지 | 확인할 항목 |
+|---|---|
+| JavaScript 키 미설정 | Vercel에 `NEXT_PUBLIC_KAKAO_JS_KEY` 등록 후 새 배포 여부 |
+| SDK 부트스트랩 다운로드 실패 | `dapi.kakao.com` 네트워크·콘텐츠 차단 여부 |
+| SDK 본체 다운로드 실패 | `t1.daumcdn.net` 네트워크·광고 차단·브라우저 확장 기능 여부 |
+| SDK 초기화 시간 초과 | JavaScript 키 종류, JavaScript SDK 도메인, 카카오맵 사용 설정 `ON` 여부 |
+| 지도 생성 실패 | 브라우저 콘솔의 카카오 인증 오류와 등록한 운영 출처 일치 여부 |
+
+Vercel Preview 배포에서도 지도를 시험하려면 실제 Preview 출처를 JavaScript SDK 도메인에 등록합니다. 와일드카드 서브도메인을 사용할 때는 카카오의 현재 도메인 등록 규칙에 맞는지 관리자 콘솔에서 확인합니다.
 
 ### 관리자 미완료 체크리스트
 
-- [ ] 사용할 카카오 앱에서 카카오맵 사용 설정이 `ON`인지 확인
-- [ ] `NEXT_PUBLIC_KAKAO_JS_KEY`가 해당 앱의 JavaScript 키인지 확인(REST API 키 사용 금지)
-- [ ] JavaScript SDK 도메인에 `http://localhost:3000` 등록
-- [ ] JavaScript SDK 도메인에 주소창과 정확히 일치하는 운영 출처 등록
-- [ ] `KAKAO_REST_API_KEY`를 Vercel 서버 환경에 비밀값으로 별도 등록
-- [ ] `NEXT_PUBLIC_KAKAO_JS_KEY` 변경 후 Vercel 재배포 완료
-- [ ] 데스크톱과 모바일 실제 브라우저에서 첫 화면 및 `/map`에 지도 타일이 표시되는지 확인
-- [ ] 지도 조회 기준 위치·하단 원문 발생지역과 인근 대피소 마커가 서로 구분되고 선택 위치에 맞는지 확인
-- [ ] 마커 선택, 지도 이동, “이 지역 재검색”, 목록 fallback이 함께 동작하는지 확인
-- [ ] 브라우저 개발자 도구에서 SDK 도메인·앱 키 오류가 없고 서버 응답이나 로그에 REST 키가 노출되지 않는지 확인
+- [ ] `ADMIN-KAKAO-001` 사용할 카카오 앱에서 카카오맵 사용 설정이 `ON`인지 확인
+- [ ] `ADMIN-KAKAO-002` `NEXT_PUBLIC_KAKAO_JS_KEY`가 해당 앱의 JavaScript 키인지 확인(REST API 키 사용 금지)
+- [ ] `ADMIN-KAKAO-003` JavaScript SDK 도메인에 `http://localhost:3000` 등록
+- [ ] `ADMIN-KAKAO-004` JavaScript SDK 도메인에 주소창과 정확히 일치하는 운영 출처 등록
+- [ ] `ADMIN-KAKAO-005` Preview 배포에서 시험한다면 해당 Preview 출처도 등록
+- [ ] `ADMIN-KAKAO-006` `KAKAO_REST_API_KEY`를 Vercel 서버 환경에 비밀값으로 별도 등록
+- [ ] `ADMIN-KAKAO-007` `NEXT_PUBLIC_KAKAO_JS_KEY` 변경 후 Vercel 재배포 완료
+- [ ] `ADMIN-KAKAO-008` 데스크톱과 모바일 실제 브라우저에서 첫 화면 및 `/map`에 지도 타일이 표시되는지 확인
+- [ ] `ADMIN-KAKAO-009` 지도 조회 기준 위치·하단 원문 발생지역과 인근 대피소 마커가 서로 구분되고 선택 위치에 맞는지 확인
+- [ ] `ADMIN-KAKAO-010` 마커 선택, 지도 이동, “이 지역 재검색”, 목록 fallback이 함께 동작하는지 확인
+- [ ] `ADMIN-KAKAO-011` 브라우저 개발자 도구에서 SDK 도메인·앱 키 오류가 없고 서버 응답이나 로그에 REST 키가 노출되지 않는지 확인
 
 ## 3. 통합대피소 연동
 

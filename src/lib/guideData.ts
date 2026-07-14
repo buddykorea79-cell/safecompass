@@ -2,7 +2,7 @@
 // - bizrouter 키가 있으면 임베딩 기반 유사도 검색, 없으면 키워드 스코어링으로 동일한 인터페이스를 제공한다.
 // - 인메모리 캐시는 서버리스 인스턴스 생명주기 동안만 유지된다(DB 없음, 재시작 시 초기화).
 
-import raw from "@/data/disasterGuide.json";
+import raw from "../data/disasterGuide.json";
 import { bizrouterAvailable, cosineSimilarity, embedTexts } from "./bizrouter";
 import type { GuideType } from "@/types";
 
