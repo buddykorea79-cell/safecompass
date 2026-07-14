@@ -20,6 +20,7 @@ export const WEATHER_ALERT_LEVEL: Record<AlertLevel, DisasterLevel> = {
 export const MESSAGE_TYPE_LEVEL: Record<MessageType, DisasterLevel> = {
   안전안내문자: 2,
   재난문자: 3,
+  "재난문자(속보)": 3,
   긴급재난문자: 4,
   위급재난문자: 5,
 };

@@ -13,6 +13,7 @@ const MESSAGE_BADGE: Record<string, string> = {
   위급재난문자: "bg-red-50 text-red-500",
   긴급재난문자: "bg-orange-50 text-orange-500",
   재난문자: "bg-amber-50 text-amber-600",
+  "재난문자(속보)": "bg-amber-50 text-amber-600",
   안전안내문자: "bg-blue-50 text-blue-500",
 };
 

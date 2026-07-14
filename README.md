@@ -15,18 +15,20 @@
 | 키 | 용도 |
 |---|---|
 | `KMA_AUTH_KEY` | 기상청 API 허브(단기예보/초단기실황) 인증키 |
-| `SAFETYDATA_SERVICE_KEY` | 재난안전데이터포털(재난문자/대피소) 서비스키 |
+| `SAFETYDATA_SERVICE10748_KEY` | 재난안전데이터포털 재난문자(속보) DSSP-IF-10748 서비스키 |
+| `SAFETYDATA_SERVICE00247_KEY` | 재난안전데이터포털 긴급재난문자 DSSP-IF-00247 서비스키 |
+| `SAFETYDATA_SERVICE_KEY` | 재난안전데이터포털 공용 키(대피소 등) — 위 두 키가 없을 때 폴백으로도 사용 |
 | `KAKAO_REST_API_KEY` | 카카오 로컬 API(병원·약국 검색, 좌표→행정동) — 서버 전용 |
 | `NEXT_PUBLIC_KAKAO_JS_KEY` | 카카오맵 JS SDK(지도 렌더링) — 브라우저 노출 |
 | `BIZROUTER_BASE_URL` / `BIZROUTER_API_KEY` | OpenAI 호환 LLM 게이트웨이(2차 판정, 챗봇, 임베딩, STT) |
-| `ADMIN_PASSWORD` | 관리자 콘솔 로그인 비밀번호 |
+| `ADMIN_PASSWORD` | 관리자 콘솔 로그인 비밀번호 (미설정 시 기본값 `21002100`) |
 | `ADMIN_SESSION_SECRET` | 관리자 세션 쿠키 서명용 비밀키(운영 배포 시 반드시 변경) |
 
 ## 알려진 한계 / 검증 필요 사항
 
 - **지역 코드**: `src/lib/regions.ts`의 `region_code`는 행정안전부 공식 법정동코드가 아닌 앱 내부 슬러그입니다. 전국 시군구는 대표 좌표로 시드했고, 세종시만 읍면동 단위까지 세분화했습니다.
-- **기상특보(주의보/경보)**: 참고 문서에 전용 엔드포인트 설명이 없어 `wrn_now_data.php`를 best-effort로 사용했습니다. 실제 키 등록 후 응답 컬럼 순서를 검증/보정하세요 (`src/lib/kma.ts`의 `getWeatherAlerts`).
-- **재난문자/대피소(safetydata.go.kr)**: 공개된 표준 REST 패턴으로 구현했으나 실제 필드명은 키 발급 후 검증이 필요합니다 (`src/lib/safetydata.ts`).
+- **기상특보(주의보/경보)**: `wrn_now_data.php`를 API 허브 문서의 컬럼 순서(REG_UP, REG_UP_KO, REG_ID, REG_KO, TM_FC, TM_EF, WRN, LVL, CMD, ED_TM)로 파싱하고 WRN/LVL 코드를 한글로 변환합니다. 실제 키 등록 후 응답 샘플로 재검증을 권장합니다 (`src/lib/kma.ts`의 `getWeatherAlerts`).
+- **재난문자/대피소(safetydata.go.kr)**: 재난문자(속보) DSSP-IF-10748과 긴급재난문자 DSSP-IF-00247을 서비스별 키로 각각 호출해 병합합니다. 최근 3일치(`crtDt`)만 조회하며, 응답 필드명은 키 발급 후 관리자 콘솔의 API 테스트로 검증하세요 (`src/lib/safetydata.ts`).
 - **재난 5단계 판정**: `docs/재난유형별_단계구분_기준.md`에 따르면 재난유형별로 실제 수치 기준이 각각 다릅니다. 현재는 기상특보/재난문자 유형을 5단계로 단순 매핑한 근사치이며(`src/data/levelCriteria.ts`), bizrouter가 설정된 경우 LLM이 규칙기반 판정보다 상향(escalate)만 할 수 있습니다.
 
 ## 개발

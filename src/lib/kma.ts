@@ -5,6 +5,7 @@
 
 import { env, hasKma } from "./env";
 import { lonLatToGrid } from "./geo";
+import { regionKeywordMatch } from "./regions";
 import type { WeatherAlert, WeatherSnapshot } from "@/types";
 
 const BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0";
@@ -206,12 +207,33 @@ export interface WeatherAlertResult {
   message?: string;
 }
 
-const ALERT_LEVEL_MAP: Record<string, WeatherAlert["alert_level"]> = {
-  예비특보: "예비특보",
-  주의보: "주의보",
-  경보: "경보",
-  중대경보: "중대경보",
+// wrn_now_data.php 특보종류 코드 → 한글명
+const WRN_KIND_MAP: Record<string, string> = {
+  W: "강풍",
+  R: "호우",
+  C: "한파",
+  D: "건조",
+  O: "폭풍해일",
+  V: "풍랑",
+  T: "태풍",
+  S: "대설",
+  Y: "황사",
+  H: "폭염",
+  F: "안개",
 };
+
+// wrn_now_data.php 특보수준 코드(1:예비, 2:주의보, 3:경보) → 앱 표기
+const WRN_LEVEL_MAP: Record<string, WeatherAlert["alert_level"]> = {
+  "1": "예비특보",
+  "2": "주의보",
+  "3": "경보",
+};
+
+// 발표시각 "202607141100" → ISO(KST)
+function kmaTimeToIso(tm: string | undefined): string | null {
+  if (!tm || !/^\d{12}/.test(tm)) return null;
+  return `${tm.slice(0, 4)}-${tm.slice(4, 6)}-${tm.slice(6, 8)}T${tm.slice(8, 10)}:${tm.slice(10, 12)}:00+09:00`;
+}
 
 // regionKeyword: 지역명 일부(예: "세종")로 필터링
 export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherAlertResult> {
@@ -231,28 +253,28 @@ export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherA
     const lines = text
       .split("\n")
       .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith("#"));
+      .filter((l) => l && !l.startsWith("#") && l !== "=");
 
     const alerts: WeatherAlert[] = lines
       .map((line, idx) => {
+        // wrn_now_data.php 컬럼 순서: REG_UP, REG_UP_KO, REG_ID, REG_KO, TM_FC, TM_EF, WRN, LVL, CMD, ED_TM
         const cols = line.split(",").map((c) => c.trim());
-        // 표준 특보 CSV 컬럼 순서(best-effort): TM_FC,STN,REG_UP,REG_ID,TM_EF,WRN,LVL,CMD,...
-        const [tmFc, , regUp, , tmEf, wrn, lvl] = cols;
+        if (cols.length < 8) return null;
+        const [, regUpKo, regId, regKo, tmFc, tmEf, wrn, lvl] = cols;
         if (!wrn) return null;
-        const alertLevel = ALERT_LEVEL_MAP[lvl] ?? "주의보";
         const alert: WeatherAlert = {
-          id: `${tmFc ?? idx}-${regUp ?? idx}-${idx}`,
-          alert_kind: wrn,
-          alert_level: alertLevel,
-          region_codes: [regUp ?? ""].filter(Boolean),
-          issued_at: tmFc ?? new Date().toISOString(),
-          effective_until: tmEf ?? null,
+          id: `${tmFc || idx}-${regId || idx}-${idx}`,
+          alert_kind: WRN_KIND_MAP[wrn] ?? wrn,
+          alert_level: WRN_LEVEL_MAP[lvl] ?? "주의보",
+          region_codes: [regKo || regUpKo || ""].filter(Boolean),
+          issued_at: kmaTimeToIso(tmFc) ?? new Date().toISOString(),
+          effective_until: kmaTimeToIso(tmEf),
           source: "kma" as const,
         };
         return alert;
       })
       .filter((a): a is WeatherAlert => a !== null)
-      .filter((a) => (regionKeyword ? a.region_codes.some((r) => r.includes(regionKeyword)) : true));
+      .filter((a) => (regionKeyword ? a.region_codes.some((r) => regionKeywordMatch(r, regionKeyword)) : true));
 
     return { alerts, fallback: false };
   } catch (err) {

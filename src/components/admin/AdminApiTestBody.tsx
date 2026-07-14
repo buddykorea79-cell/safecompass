@@ -6,7 +6,9 @@ import { Loader2 } from "lucide-react";
 const PROVIDERS = [
   { value: "kma-weather", label: "기상청 - 날씨 조회", fields: ["lat", "lng"] },
   { value: "kma-alerts", label: "기상청 - 특보 조회", fields: ["region"] },
-  { value: "safetydata-messages", label: "재난안전데이터 - 재난문자", fields: ["region"] },
+  { value: "safetydata-messages", label: "재난안전데이터 - 재난문자 통합(속보+긴급)", fields: ["region"] },
+  { value: "safetydata-emergency", label: "재난안전데이터 - 긴급재난문자 (DSSP-IF-00247)", fields: ["region"] },
+  { value: "safetydata-breaking", label: "재난안전데이터 - 재난문자 속보 (DSSP-IF-10748)", fields: ["region"] },
   { value: "safetydata-shelters", label: "재난안전데이터 - 대피소", fields: ["lat", "lng"] },
   { value: "kakao-places", label: "카카오 - 병원/약국 검색", fields: ["lat", "lng", "category"] },
   { value: "kakao-geocode", label: "카카오 - 좌표→지역 변환", fields: ["lat", "lng"] },

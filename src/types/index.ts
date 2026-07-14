@@ -51,7 +51,7 @@ export interface WeatherSnapshot {
   message?: string;
 }
 
-export type MessageType = "긴급재난문자" | "안전안내문자" | "위급재난문자" | "재난문자";
+export type MessageType = "긴급재난문자" | "안전안내문자" | "위급재난문자" | "재난문자" | "재난문자(속보)";
 
 export interface DisasterMessage {
   id: string;
@@ -60,6 +60,8 @@ export interface DisasterMessage {
   content: string;
   issued_at: string;
   source: "safetydata";
+  // 어떤 포털 서비스에서 수집됐는지 (00247: 긴급재난문자, 10748: 재난문자 속보)
+  service?: "00247" | "10748";
 }
 
 export type AlertLevel = "예비특보" | "주의보" | "경보" | "중대경보";

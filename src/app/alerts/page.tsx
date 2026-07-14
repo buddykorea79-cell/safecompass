@@ -46,7 +46,17 @@ export default function AlertsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [region]);
 
-  const filtered = useMemo(() => alerts.filter((a) => filter === "all" || a.kind === filter), [alerts, filter]);
+  const filtered = useMemo(
+    () =>
+      alerts.filter((a) => {
+        if (filter === "all") return true;
+        if (filter === "weather") return a.kind === "weather";
+        if (a.kind !== "message") return false;
+        const isBreaking = a.service === "10748" || a.msg_type === "재난문자(속보)";
+        return filter === "breaking" ? isBreaking : !isBreaking;
+      }),
+    [alerts, filter]
+  );
   const bothFallback = fallback.messages && fallback.alerts;
 
   return (

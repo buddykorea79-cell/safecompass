@@ -1,5 +1,5 @@
 // 카카오 로컬/맵 어댑터
-// - 카테고리 검색(병원 HP8/약국 PM9): https://dapi.kakao.com/v2/local/search/category.php
+// - 카테고리 검색(병원 HP8/약국 PM9): https://dapi.kakao.com/v2/local/search/category.json
 // - 좌표→행정동 변환: https://dapi.kakao.com/v2/local/geo/coord2regioncode.json
 // - 길찾기 딥링크: https://map.kakao.com/link/to/{name},{lat},{lng}
 
@@ -39,7 +39,7 @@ export async function searchNearbyPlaces(
   }
   try {
     const code = category === "hospital" ? "HP8" : "PM9";
-    const json = await callKakao("/search/category.php", {
+    const json = await callKakao("/search/category.json", {
       category_group_code: code,
       x: String(lng),
       y: String(lat),

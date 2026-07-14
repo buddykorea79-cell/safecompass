@@ -335,3 +335,14 @@ export function listSigunguBySido(sido: string): RegionSeed[] {
 }
 
 export const DEFAULT_REGION: RegionSeed = REGIONS.find((r0) => r0.eupmyeondong === "어진동")!;
+
+// 알림 지역 필터 매칭.
+// 사용자 위치 라벨은 "세종특별자치시 어진동"처럼 여러 토큰이지만 API가 주는 지역명은
+// "세종특별자치시" 단위인 경우가 많아, 토큰 단위 부분일치까지 허용한다.
+export function regionKeywordMatch(regionText: string, keyword: string): boolean {
+  const region = regionText.trim();
+  const kw = keyword.trim();
+  if (!region || !kw) return false;
+  if (region.includes(kw) || kw.includes(region)) return true;
+  return kw.split(/[\s,]+/).some((token) => token.length >= 2 && region.includes(token));
+}

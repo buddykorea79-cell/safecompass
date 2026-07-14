@@ -2,11 +2,12 @@
 
 import clsx from "clsx";
 
-export type AlertFilterKey = "all" | "message" | "weather";
+export type AlertFilterKey = "all" | "emergency" | "breaking" | "weather";
 
 const FILTERS: { key: AlertFilterKey; label: string }[] = [
   { key: "all", label: "전체" },
-  { key: "message", label: "재난문자" },
+  { key: "emergency", label: "긴급재난문자" },
+  { key: "breaking", label: "재난문자(속보)" },
   { key: "weather", label: "기상특보" },
 ];
 
@@ -30,7 +31,7 @@ export default function AlertFilterBar({
         placeholder="지역으로 검색 (예: 세종특별자치시)"
         className="mb-3 w-full rounded-xl border border-slate-200 bg-white px-3.5 py-2.5 text-sm text-slate-700 placeholder:text-slate-400 focus:border-brand-400 focus:outline-none"
       />
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         {FILTERS.map(({ key, label }) => (
           <button
             key={key}

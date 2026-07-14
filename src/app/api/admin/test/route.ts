@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySessionToken, ADMIN_COOKIE_NAME } from "@/lib/adminAuth";
 import { getWeatherSnapshot, getWeatherAlerts } from "@/lib/kma";
-import { getDisasterMessages, getNearbyShelters } from "@/lib/safetydata";
+import { getDisasterMessages, getEmergencyMessages, getBreakingMessages, getNearbyShelters } from "@/lib/safetydata";
 import { searchNearbyPlaces, coordToRegionLabel } from "@/lib/kakao";
 import { chatComplete } from "@/lib/bizrouter";
 
@@ -28,6 +28,10 @@ export async function POST(req: NextRequest) {
         return NextResponse.json(await getWeatherAlerts(params.region));
       case "safetydata-messages":
         return NextResponse.json(await getDisasterMessages(params.region));
+      case "safetydata-emergency":
+        return NextResponse.json(await getEmergencyMessages(params.region));
+      case "safetydata-breaking":
+        return NextResponse.json(await getBreakingMessages(params.region));
       case "safetydata-shelters":
         return NextResponse.json(await getNearbyShelters(lat, lng));
       case "kakao-places":

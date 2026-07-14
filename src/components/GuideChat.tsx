@@ -4,19 +4,17 @@ import { useRef, useState } from "react";
 import { Send, Mic, Volume2, Loader2 } from "lucide-react";
 import clsx from "clsx";
 
-interface ChatMessage {
-  role: "user" | "assistant";
-  text: string;
+// 대화(채팅) 형식이 아니라, 마지막 질문 1건과 그 답변만 Q/A로 보여준다.
+interface QA {
+  question: string;
+  answer: string | null; // null = 답변 대기 중
   grounded?: boolean;
 }
 
+const ERROR_ANSWER = "정확한 정보를 찾지 못했습니다. 119 또는 재난안전상황실(044-205-1541~3)에 문의해 주세요.";
+
 export default function GuideChat() {
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      role: "assistant",
-      text: "안녕하세요! 재난 상황에서 어떻게 행동해야 할지 궁금하신 점을 물어보세요. (예: 지진 났을 때 엘리베이터 안이면 어떻게 해요?)",
-    },
-  ]);
+  const [qa, setQa] = useState<QA | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [listening, setListening] = useState(false);
@@ -25,7 +23,7 @@ export default function GuideChat() {
   async function send(text: string) {
     const trimmed = text.trim();
     if (!trimmed || loading) return;
-    setMessages((prev) => [...prev, { role: "user", text: trimmed }]);
+    setQa({ question: trimmed, answer: null });
     setInput("");
     setLoading(true);
     try {
@@ -35,12 +33,9 @@ export default function GuideChat() {
         body: JSON.stringify({ message: trimmed }),
       });
       const json = await res.json();
-      setMessages((prev) => [...prev, { role: "assistant", text: json.reply, grounded: json.grounded }]);
+      setQa({ question: trimmed, answer: json.reply ?? ERROR_ANSWER, grounded: json.grounded });
     } catch {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", text: "정확한 정보를 찾지 못했습니다. 119 또는 재난안전상황실(044-205-1541~3)에 문의해 주세요." },
-      ]);
+      setQa({ question: trimmed, answer: ERROR_ANSWER });
     } finally {
       setLoading(false);
     }
@@ -80,34 +75,7 @@ export default function GuideChat() {
 
   return (
     <div className="rounded-2xl bg-white p-4 shadow-card">
-      <div className="mb-3 max-h-80 space-y-2.5 overflow-y-auto">
-        {messages.map((m, i) => (
-          <div key={i} className={clsx("flex", m.role === "user" ? "justify-end" : "justify-start")}>
-            <div
-              className={clsx(
-                "max-w-[85%] rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed",
-                m.role === "user" ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-700"
-              )}
-            >
-              <p className="whitespace-pre-line">{m.text}</p>
-              {m.role === "assistant" && (
-                <button onClick={() => speak(m.text)} className="mt-1.5 text-slate-400 hover:text-slate-600">
-                  <Volume2 size={14} />
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="rounded-2xl bg-slate-100 px-3.5 py-2.5">
-              <Loader2 size={14} className="animate-spin text-slate-400" />
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="flex items-center gap-2">
+      <div className="mb-3 flex items-center gap-2">
         <button
           onClick={toggleMic}
           className={clsx(
@@ -121,8 +89,8 @@ export default function GuideChat() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send(input)}
-          placeholder="궁금한 점을 물어보세요"
-          className="flex-1 rounded-full border border-slate-200 px-4 py-2.5 text-sm focus:border-brand-400 focus:outline-none"
+          placeholder="궁금한 점을 입력하세요 (예: 지진 났을 때 엘리베이터 안이면?)"
+          className="flex-1 rounded-full border border-slate-200 px-4 py-2.5 text-[15px] focus:border-brand-400 focus:outline-none"
         />
         <button
           onClick={() => send(input)}
@@ -132,6 +100,35 @@ export default function GuideChat() {
           <Send size={16} />
         </button>
       </div>
+
+      {qa === null ? (
+        <p className="rounded-xl bg-slate-50 px-4 py-3 text-sm leading-relaxed text-slate-500">
+          재난 상황에서 어떻게 행동해야 할지 질문을 입력하면, 국민행동요령을 근거로 답변을 보여드립니다.
+        </p>
+      ) : (
+        <div className="space-y-2.5">
+          <div className="rounded-xl bg-brand-50 px-4 py-3">
+            <p className="mb-1 text-xs font-bold text-brand-700">질문</p>
+            <p className="text-[15px] font-medium leading-relaxed text-slate-800">{qa.question}</p>
+          </div>
+          <div className="rounded-xl bg-slate-50 px-4 py-3">
+            <p className="mb-1 text-xs font-bold text-slate-500">답변</p>
+            {qa.answer === null ? (
+              <Loader2 size={16} className="my-1 animate-spin text-slate-400" />
+            ) : (
+              <>
+                <p className="whitespace-pre-line text-[15px] leading-relaxed text-slate-700">{qa.answer}</p>
+                <button
+                  onClick={() => speak(qa.answer!)}
+                  className="mt-2 flex items-center gap-1 text-xs text-slate-400 hover:text-slate-600"
+                >
+                  <Volume2 size={14} /> 음성으로 듣기
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

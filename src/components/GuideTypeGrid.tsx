@@ -2,12 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { Search, Flame, Users } from "lucide-react";
+import { Search } from "lucide-react";
 import clsx from "clsx";
 
 type GuideSummary = { id: string; category: "natural" | "social"; name: string };
 
 type Tab = "all" | "natural" | "social";
+
+// 자연재난/사회재난을 아이콘 없이 색상으로 구분한다.
+const CATEGORY_STYLE: Record<GuideSummary["category"], { card: string; dot: string; label: string }> = {
+  natural: { card: "border-sky-200 bg-sky-50 text-sky-900", dot: "bg-sky-500", label: "자연재난" },
+  social: { card: "border-orange-200 bg-orange-50 text-orange-900", dot: "bg-orange-500", label: "사회재난" },
+};
 
 export default function GuideTypeGrid({ highlightIds = [] as string[] }: { highlightIds?: string[] }) {
   const [all, setAll] = useState<GuideSummary[]>([]);
@@ -46,8 +52,9 @@ export default function GuideTypeGrid({ highlightIds = [] as string[] }: { highl
     };
   }, [query]);
 
+  // 가나다순 정렬 (검색 결과는 관련도순 유지)
   const list = useMemo(() => {
-    const base = searchResults ?? all;
+    const base = searchResults ?? [...all].sort((a, b) => a.name.localeCompare(b.name, "ko"));
     return tab === "all" ? base : base.filter((g) => g.category === tab);
   }, [searchResults, all, tab]);
 
@@ -63,23 +70,35 @@ export default function GuideTypeGrid({ highlightIds = [] as string[] }: { highl
         />
       </div>
 
-      <div className="mb-3 flex gap-2">
-        {[
-          { key: "all" as const, label: "전체" },
-          { key: "natural" as const, label: "자연재난" },
-          { key: "social" as const, label: "사회재난" },
-        ].map(({ key, label }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={clsx(
-              "rounded-full px-3.5 py-1.5 text-xs font-semibold",
-              tab === key ? "bg-brand-600 text-white" : "bg-white text-slate-500 shadow-card"
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="mb-3 flex items-center justify-between">
+        <div className="flex gap-2">
+          {[
+            { key: "all" as const, label: "전체" },
+            { key: "natural" as const, label: "자연재난" },
+            { key: "social" as const, label: "사회재난" },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={clsx(
+                "rounded-full px-3.5 py-1.5 text-xs font-semibold",
+                tab === key ? "bg-brand-600 text-white" : "bg-white text-slate-500 shadow-card"
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-2.5 text-[11px] text-slate-500">
+          <span className="flex items-center gap-1">
+            <span className={clsx("h-2 w-2 rounded-full", CATEGORY_STYLE.natural.dot)} />
+            자연
+          </span>
+          <span className="flex items-center gap-1">
+            <span className={clsx("h-2 w-2 rounded-full", CATEGORY_STYLE.social.dot)} />
+            사회
+          </span>
+        </div>
       </div>
 
       {searching ? (
@@ -87,24 +106,24 @@ export default function GuideTypeGrid({ highlightIds = [] as string[] }: { highl
       ) : list.length === 0 ? (
         <p className="py-6 text-center text-xs text-slate-400">결과가 없습니다.</p>
       ) : (
-        <div className="grid grid-cols-3 gap-2.5">
-          {list.map((g) => (
-            <Link
-              key={g.id}
-              href={`/guide/${encodeURIComponent(g.id)}`}
-              className={clsx(
-                "flex aspect-square flex-col items-center justify-center gap-1.5 rounded-2xl bg-white p-2 text-center shadow-card",
-                highlightIds.includes(g.id) && "ring-2 ring-brand-400"
-              )}
-            >
-              {g.category === "natural" ? (
-                <Flame size={18} className="text-brand-500" />
-              ) : (
-                <Users size={18} className="text-slate-400" />
-              )}
-              <span className="line-clamp-2 text-[11px] font-medium leading-tight text-slate-600">{g.name}</span>
-            </Link>
-          ))}
+        <div className="grid grid-cols-2 gap-2.5">
+          {list.map((g) => {
+            const style = CATEGORY_STYLE[g.category];
+            return (
+              <Link
+                key={g.id}
+                href={`/guide/${encodeURIComponent(g.id)}`}
+                className={clsx(
+                  "flex min-h-[3.5rem] items-center rounded-2xl border px-4 py-3 shadow-card",
+                  style.card,
+                  highlightIds.includes(g.id) && "ring-2 ring-brand-400"
+                )}
+                aria-label={`${g.name} (${style.label})`}
+              >
+                <span className="text-[16px] font-semibold leading-snug">{g.name}</span>
+              </Link>
+            );
+          })}
         </div>
       )}
     </div>
