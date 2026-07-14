@@ -13,8 +13,9 @@
 *.pem
 
 # env
-.env
-.env*.local
+.env*
+!.env.example
+/data/runtime/
 
 # vercel
 .vercel

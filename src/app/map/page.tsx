@@ -96,6 +96,7 @@ function MapScreenInner() {
       const requestId = ++markerRequestId.current;
       setMarkers([]);
       setMarkerMessage("");
+      setSelected(null);
       const requests: Array<Promise<MarkerQueryResult>> = [];
 
       if (layers.has("shelter")) {
@@ -106,12 +107,14 @@ function MapScreenInner() {
               if (!response.ok) throw new Error(payload.error ?? "대피소 조회 실패");
               return {
                 items: (payload.shelters ?? []).map((shelter: Shelter) => ({
-                  kind: "shelter" as const,
                   ...shelter,
+                  kind: "shelter" as const,
                 })),
-                message: payload.fallback
-                  ? `대피소: ${payload.message ?? "공식 데이터를 확인하지 못했습니다."}`
-                  : undefined,
+                message: payload.message
+                  ? `대피소: ${payload.message}`
+                  : payload.fallback
+                    ? "대피소: 통합대피소 공식 데이터를 확인하지 못했습니다."
+                    : undefined,
               };
             })
             .catch((cause: unknown) => ({
@@ -214,6 +217,7 @@ function MapScreenInner() {
       markerRequestId.current += 1;
       setMarkers([]);
       setMarkerMessage("");
+      setSelected(null);
       return;
     }
     void loadMarkers(center, activeLayers);

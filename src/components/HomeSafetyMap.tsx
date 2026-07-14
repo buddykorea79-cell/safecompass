@@ -74,47 +74,47 @@ export default function HomeSafetyMap({
     setSelected(null);
     setMarkers([]);
 
-    Promise.all([
-      fetch(`/api/shelters?lat=${lat}&lng=${lng}`, { signal: controller.signal })
-        .then(async (response) => {
-          const payload = await response.json();
-          if (!response.ok) throw new Error(payload.error ?? "대피소 조회 실패");
-          return {
-            items: (payload.shelters ?? []).map((shelter: Shelter) => ({
-              kind: "shelter" as const,
-              ...shelter,
-            })) as MapMarkerItem[],
-            message: payload.fallback
-              ? payload.message ?? "대피소 공식 데이터를 확인하지 못했습니다."
-              : "",
-          };
-        })
-        .catch((cause: unknown) => ({
-          items: [] as MapMarkerItem[],
-          message: cause instanceof Error ? cause.message : "대피소 조회 실패",
-        })),
-      fetch(
-        `/api/situation?region_code=${encodeURIComponent(
-          regionCode
-        )}&region_keyword=${encodeURIComponent(regionLabel)}`,
-        { signal: controller.signal }
-      )
-        .then(async (response) => {
-          if (!response.ok) throw new Error("상황정보를 조회하지 못했습니다.");
-          return response.json();
-        })
-        .catch((cause: unknown) => ({
-          situation: null,
-          dataMessage:
-            cause instanceof Error ? cause.message : "상황정보를 조회하지 못했습니다.",
-        })),
-    ])
-      .then(([shelterPayload, situationPayload]) => {
+    void fetch(`/api/shelters?lat=${lat}&lng=${lng}`, { signal: controller.signal })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(payload.error ?? "대피소 조회 실패");
         if (controller.signal.aborted) return;
-        setMarkers(shelterPayload.items);
-        setShelterMessage(shelterPayload.message);
+        setMarkers(
+          (payload.shelters ?? []).map((shelter: Shelter) => ({
+            ...shelter,
+            kind: "shelter" as const,
+          }))
+        );
+        setShelterMessage(
+          payload.message ??
+            (payload.fallback ? "통합대피소 공식 데이터를 확인하지 못했습니다." : "")
+        );
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setMarkers([]);
+        setShelterMessage(cause instanceof Error ? cause.message : "대피소 조회 실패");
+      });
+
+    void fetch(
+      `/api/situation?region_code=${encodeURIComponent(
+        regionCode
+      )}&region_keyword=${encodeURIComponent(regionLabel)}`,
+      { signal: controller.signal }
+    )
+      .then(async (response) => {
+        if (!response.ok) throw new Error("상황정보를 조회하지 못했습니다.");
+        return response.json();
+      })
+      .then((situationPayload) => {
+        if (controller.signal.aborted) return;
         setSituation(situationPayload.situation ?? null);
         if (situationPayload.dataMessage) setMessage(situationPayload.dataMessage);
+      })
+      .catch((cause: unknown) => {
+        if (controller.signal.aborted) return;
+        setSituation(null);
+        setMessage(cause instanceof Error ? cause.message : "상황정보를 조회하지 못했습니다.");
       })
       .finally(() => {
         if (!controller.signal.aborted) setLoading(false);

@@ -37,7 +37,7 @@ export interface LocationState {
 }
 
 export interface WeatherSnapshot {
-  provider: "KMA_APIHUB" | "DATA_GO_KR" | "MIXED" | null;
+  provider: "KMA_APIHUB" | null;
   temp: number | null; // 현재기온
   feelsLike: number | null; // 체감온도(단순 근사)
   sky: "clear" | "partly_cloudy" | "cloudy" | "overcast" | "unknown";
@@ -102,18 +102,24 @@ export interface DisasterSituation {
 export type ShelterType =
   | "민방위대피소"
   | "지진옥외대피장소"
+  | "지진해일긴급대피장소"
   | "이재민임시주거시설"
   | "무더위쉼터"
   | "한파쉼터"
   | "일반";
 
+export type ShelterTypeCode = "1" | "2" | "3" | "4";
+
 export interface Shelter {
   id: string;
   name: string;
   shelter_type: ShelterType;
+  shelter_type_code?: ShelterTypeCode;
+  shelter_type_name?: string;
   address: string;
   lat: number;
   lng: number;
+  source?: "DSSP-IF-10941";
   capacity?: number | null;
   distanceMeters?: number;
 }

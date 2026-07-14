@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { verifySessionToken, ADMIN_COOKIE_NAME } from "@/lib/adminAuth";
 import { getWeatherSnapshot, getWeatherAlerts } from "@/lib/kma";
-import { getDisasterMessages, getEmergencyMessages, getBreakingMessages, getNearbyShelters } from "@/lib/safetydata";
+import { getDisasterMessages, getEmergencyMessages, getBreakingMessages, testIntegratedShelterSource } from "@/lib/safetydata";
+import { loadShelterSnapshot } from "@/lib/shelterSnapshot";
 import { searchNearbyPlaces, coordToRegionLabel } from "@/lib/kakao";
 import { chatComplete } from "@/lib/bizrouter";
 
@@ -33,7 +34,16 @@ export async function POST(req: NextRequest) {
       case "safetydata-breaking":
         return NextResponse.json(await getBreakingMessages(params.region));
       case "safetydata-shelters":
-        return NextResponse.json(await getNearbyShelters(lat, lng));
+        const snapshot = await loadShelterSnapshot();
+        return NextResponse.json({
+          fallback: false,
+          source: snapshot.source,
+          fetchedAt: snapshot.fetchedAt,
+          count: snapshot.validCount,
+          sample: snapshot.shelters[0] ?? null,
+        });
+      case "safetydata-shelters-live":
+        return NextResponse.json(await testIntegratedShelterSource());
       case "kakao-places":
         return NextResponse.json(
           await searchNearbyPlaces(lat, lng, params.category === "pharmacy" ? "pharmacy" : "hospital")

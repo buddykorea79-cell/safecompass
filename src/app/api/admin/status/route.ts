@@ -5,7 +5,7 @@ import { getApiLog } from "@/lib/apiLog";
 
 export async function GET(req: NextRequest) {
   if (!verifySessionToken(req.cookies.get(ADMIN_COOKIE_NAME)?.value)) {
-    return NextResponse.json({ error: "로그인이 필요합니다" }, { status: 401 });
+    return NextResponse.json({ error: "접근코드 확인이 필요합니다" }, { status: 401 });
   }
   return NextResponse.json({ providers: providerStatuses(), log: getApiLog() });
 }

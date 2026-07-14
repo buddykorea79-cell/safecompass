@@ -2,11 +2,13 @@
 
 import { X, Navigation, Phone } from "lucide-react";
 import { kakaoDirectionsUrl } from "@/lib/kakao";
+import type { ShelterType } from "@/types";
 import type { MapMarkerItem } from "./KakaoMap";
 
-const SHELTER_TYPE_LABEL: Record<string, string> = {
+const SHELTER_TYPE_LABEL: Record<ShelterType, string> = {
   민방위대피소: "민방위 대피소",
   지진옥외대피장소: "지진 옥외대피장소",
+  지진해일긴급대피장소: "지진해일 긴급대피장소",
   이재민임시주거시설: "이재민 임시주거시설",
   무더위쉼터: "무더위 쉼터",
   한파쉼터: "한파 쉼터",

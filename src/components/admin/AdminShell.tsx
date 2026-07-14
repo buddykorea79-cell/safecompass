@@ -26,7 +26,7 @@ export default function AdminShell({ active, children }: { active: string; child
         <h1 className="text-xl font-bold text-slate-800">안전나침판 관리자</h1>
         <button onClick={logout} className="flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-slate-600">
           <LogOut size={14} />
-          로그아웃
+          접속 종료
         </button>
       </div>
 

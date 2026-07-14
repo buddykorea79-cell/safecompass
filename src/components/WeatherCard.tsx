@@ -24,8 +24,6 @@ const SKY_LABEL: Record<WeatherSnapshot["sky"], string> = {
 
 const PROVIDER_LABEL: Record<NonNullable<WeatherSnapshot["provider"]>, string> = {
   KMA_APIHUB: "기상청 API허브",
-  DATA_GO_KR: "공공데이터포털 동네예보",
-  MIXED: "기상청 API허브·공공데이터포털",
 };
 
 function formatBaseTime(baseDate: string | null, baseTime: string | null): string | null {

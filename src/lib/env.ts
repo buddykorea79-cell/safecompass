@@ -17,41 +17,35 @@ function cleanKey(raw: string | undefined): string {
   return key;
 }
 
-// 재난안전데이터포털은 서비스(API)별로 키가 따로 발급된다.
+// 재난안전데이터공유플랫폼은 활용 신청한 서비스별 키를 서로 교차 사용하지 않는다.
 // - SAFETYDATA_SERVICE10748_KEY: DSSP-IF-10748 재난문자(속보)
 // - SAFETYDATA_SERVICE00247_KEY: DSSP-IF-00247 긴급재난문자
-// - SAFETYDATA_SERVICE_KEY:      (레거시/공용) 위 키가 없을 때의 폴백 + 대피소 등 기타 서비스
-const legacySafetydataKey = cleanKey(process.env.SAFETYDATA_SERVICE_KEY);
-const safetydata10748 = cleanKey(process.env.SAFETYDATA_SERVICE10748_KEY);
-const safetydata00247 = cleanKey(process.env.SAFETYDATA_SERVICE00247_KEY);
+// - SAFETYDATA_SERVICE10941_KEY: DSSP-IF-10941 통합대피소
 
 export const env = {
   kmaApiHubAuthKey: cleanKey(process.env.KMA_AUTH_KEY),
-  kmaServiceKey: cleanKey(process.env.KMA_SERVICE_KEY),
-  safetydataService10748Key: safetydata10748 || legacySafetydataKey,
-  safetydataService00247Key: safetydata00247 || legacySafetydataKey,
-  safetydataServiceKey: legacySafetydataKey || safetydata00247 || safetydata10748,
+  safetydataService10748Key: cleanKey(process.env.SAFETYDATA_SERVICE10748_KEY),
+  safetydataService00247Key: cleanKey(process.env.SAFETYDATA_SERVICE00247_KEY),
+  safetydataService10941Key: cleanKey(process.env.SAFETYDATA_SERVICE10941_KEY),
+  blobReadWriteToken: cleanKey(process.env.BLOB_READ_WRITE_TOKEN),
   kakaoRestApiKey: cleanKey(process.env.KAKAO_REST_API_KEY),
   kakaoJsKey: (process.env.NEXT_PUBLIC_KAKAO_JS_KEY ?? "").trim(),
   bizrouterBaseUrl: (process.env.BIZROUTER_BASE_URL ?? "").trim(),
   bizrouterApiKey: (process.env.BIZROUTER_API_KEY ?? "").trim(),
   bizrouterChatModel: process.env.BIZROUTER_CHAT_MODEL || "gpt-4o-mini",
   bizrouterEmbeddingModel: process.env.BIZROUTER_EMBEDDING_MODEL || "text-embedding-3-small",
-  adminPassword: (process.env.ADMIN_PASSWORD ?? "").trim(),
-  adminSessionSecret: (process.env.ADMIN_SESSION_SECRET ?? "").trim(),
 };
 
 export const hasKmaApiHub = () => Boolean(env.kmaApiHubAuthKey);
-export const hasKmaPublicData = () => Boolean(env.kmaServiceKey);
-export const hasKma = () => hasKmaApiHub() || hasKmaPublicData();
+export const hasKma = () => hasKmaApiHub();
 export const hasSafetydata10748 = () => Boolean(env.safetydataService10748Key);
 export const hasSafetydata00247 = () => Boolean(env.safetydataService00247Key);
-export const hasSafetydata = () => Boolean(env.safetydataServiceKey);
+export const hasSafetydata10941 = () => Boolean(env.safetydataService10941Key);
+export const hasShelterSnapshotStorage = () =>
+  Boolean(env.blobReadWriteToken) || process.env.NODE_ENV !== "production";
 export const hasKakaoRest = () => Boolean(env.kakaoRestApiKey);
 export const hasKakaoJs = () => Boolean(env.kakaoJsKey);
 export const hasBizrouter = () => Boolean(env.bizrouterBaseUrl && env.bizrouterApiKey);
-// 둘 중 하나라도 빠지면 관리자 인증을 fail-closed로 비활성화한다.
-export const hasAdminPassword = () => Boolean(env.adminPassword && env.adminSessionSecret);
 
 export interface ProviderStatus {
   provider: "kma" | "safetydata" | "kakao" | "bizrouter";
@@ -61,17 +55,14 @@ export interface ProviderStatus {
 }
 
 export function providerStatuses(): ProviderStatus[] {
-  const configuredKmaKeys = [
-    hasKmaApiHub() ? "KMA_AUTH_KEY(API허브)" : "",
-    hasKmaPublicData() ? "KMA_SERVICE_KEY(공공데이터포털)" : "",
-  ].filter(Boolean);
-  const kmaDetail = configuredKmaKeys.length
-    ? `${configuredKmaKeys.join(" / ")} 설정됨${hasKmaApiHub() ? "" : " · 기상특보는 KMA_AUTH_KEY가 필요합니다"}`
-    : "KMA_AUTH_KEY / KMA_SERVICE_KEY 미설정 — 날씨/특보 데이터를 가져올 수 없습니다";
+  const kmaDetail = hasKmaApiHub()
+    ? "KMA_AUTH_KEY 설정됨 · API허브 단기예보 격자자료/기상특보 전용"
+    : "KMA_AUTH_KEY 미설정 — API허브 단기예보/특보 데이터를 가져올 수 없습니다";
   const safetydataMissing = [
     hasSafetydata10748() ? "" : "SAFETYDATA_SERVICE10748_KEY(재난문자 속보) 미설정",
     hasSafetydata00247() ? "" : "SAFETYDATA_SERVICE00247_KEY(긴급재난문자) 미설정",
-    hasSafetydata() ? "" : "SAFETYDATA_SERVICE_KEY(대피소 등 공용) 미설정",
+    hasSafetydata10941() ? "" : "SAFETYDATA_SERVICE10941_KEY(통합대피소 DSSP-IF-10941) 미설정",
+    hasShelterSnapshotStorage() ? "" : "BLOB_READ_WRITE_TOKEN(통합대피소 JSON 저장소) 미설정",
   ].filter(Boolean);
 
   return [
@@ -83,11 +74,11 @@ export function providerStatuses(): ProviderStatus[] {
     },
     {
       provider: "safetydata",
-      label: "재난안전데이터포털",
-      configured: hasSafetydata10748() && hasSafetydata00247(),
+      label: "재난안전데이터공유플랫폼",
+      configured: hasSafetydata10941() && hasShelterSnapshotStorage(),
       detail:
         safetydataMissing.length === 0
-          ? "재난문자(속보)·긴급재난문자·공용 키 모두 설정됨"
+          ? "재난문자 2종·통합대피소 전용 키·JSON 저장소 모두 설정됨"
           : safetydataMissing.join(" / "),
     },
     {

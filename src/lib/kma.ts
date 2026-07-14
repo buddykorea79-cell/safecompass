@@ -1,127 +1,111 @@
-// 기상청 API허브(apihub.kma.go.kr) / 공공데이터포털 동네예보 어댑터.
-// 실제 엔드포인트/파라미터는 docs/단기예보.txt (VilageFcstInfoService_2.0) 기준
-// - getUltraSrtNcst: 초단기실황(매시, 10분 이후 제공) — T1H/RN1/PTY/REH/WSD/VEC 등
-// - getVilageFcst:   단기예보(1일 8회, 02/05/08/11/14/17/20/23시 생산) — TMP/TMX/TMN/SKY/PTY/POP 등
+// 기상청 API허브 단기예보 격자자료 어댑터.
+// 날씨는 typ01 nph-dfs_shrt_grd만 사용하며 공공데이터포털로 폴백하지 않는다.
 
-import { env, hasKma, hasKmaApiHub } from "./env";
+import { env, hasKmaApiHub } from "./env";
 import { lonLatToGrid } from "./geo";
 import { regionKeywordMatch } from "./regions";
 import type { WeatherAlert, WeatherSnapshot } from "../types";
 
-const APIHUB_BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0";
-// API허브 authKey와 공공데이터포털 serviceKey는 서로 발급처와 권한이 다르다.
-// 두 포털을 폴백으로 사용하더라도 각 포털에 해당하는 키만 보낸다.
-const DATA_GO_KR_BASE_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0";
-// 기상특보 현황(typ01/url) — docs/예특보.txt에 상세 응답 필드가 문서화되어 있지 않아
-// KMA API 허브의 공개된 특보 조회 표준 엔드포인트를 best-effort로 사용한다.
-// 실제 키 등록 후 응답 필드명 보정이 필요할 수 있다.
+const SHORT_FORECAST_GRID_URL =
+  "https://apihub.kma.go.kr/api/typ01/cgi-bin/url/nph-dfs_shrt_grd";
 const WARNING_URL = "https://apihub.kma.go.kr/api/typ01/url/wrn_now_data.php";
-const KMA_PROVIDER_TIMEOUT_MS = 3_500;
-const KMA_TOTAL_TIMEOUT_MS = 7_500;
+const KMA_GRID_TIMEOUT_MS = 10_000;
+const KMA_TOTAL_TIMEOUT_MS = 15_000;
 const KMA_ALERT_TIMEOUT_MS = 8_000;
+const GRID_CACHE_TTL_MS = 65 * 60 * 1000;
+const GRID_NX = 149;
+const GRID_NY = 253;
+const GRID_CELL_COUNT = GRID_NX * GRID_NY;
+const FORECAST_GRACE_MINUTES = 15;
+const SHORT_FORECAST_HOURS = [2, 5, 8, 11, 14, 17, 20, 23];
+const CURRENT_VARIABLES = ["TMP", "SKY", "PTY", "POP", "PCP", "REH", "WSD"] as const;
 
-// 일부 공공 API 앞단 방화벽이 User-Agent 없는 요청을 403으로 차단하는 사례가 있어 항상 붙인다.
-const COMMON_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; SafeCompass/1.0)", Accept: "*/*" };
+type ShortForecastVariable = (typeof CURRENT_VARIABLES)[number] | "TMX" | "TMN";
+
+const MISSING_VALUE: Record<ShortForecastVariable, number> = {
+  TMP: -50,
+  TMX: -50,
+  TMN: -50,
+  SKY: -1,
+  PTY: -1,
+  POP: -1,
+  PCP: -1,
+  REH: -1,
+  WSD: -1,
+};
+
+const COMMON_HEADERS = {
+  "User-Agent": "Mozilla/5.0 (compatible; SafeCompass/1.0)",
+  Accept: "text/plain,*/*",
+};
+
+const gridCache = new Map<string, { values: number[]; expiresAt: number }>();
 
 function pad(n: number, len = 2): string {
   return String(n).padStart(len, "0");
 }
 
-// KST 기준 현재시각 (서버가 UTC로 도는 환경 대비)
 function nowKst(): Date {
   const now = new Date();
-  const utcMs = now.getTime() + now.getTimezoneOffset() * 60000;
-  return new Date(utcMs + 9 * 60 * 60000);
+  const utcMs = now.getTime() + now.getTimezoneOffset() * 60_000;
+  return new Date(utcMs + 9 * 60 * 60_000);
 }
 
-function fmtDate(d: Date): string {
+function formatDate(d: Date): string {
   return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}`;
 }
 
-// 초단기실황: 매시 40분 이후 해당 시(정시) 자료 제공 → 40분 이전엔 한 시간 전 자료 사용
-function ultraSrtNcstBase(d: Date): { base_date: string; base_time: string } {
-  const t = new Date(d.getTime());
-  if (t.getMinutes() < 40) {
-    t.setHours(t.getHours() - 1);
+function formatHour(d: Date): string {
+  return `${formatDate(d)}${pad(d.getHours())}`;
+}
+
+export function shortForecastBase(d: Date): string {
+  const available = new Date(d.getTime());
+  available.setMinutes(available.getMinutes() - FORECAST_GRACE_MINUTES);
+  let hour = [...SHORT_FORECAST_HOURS].reverse().find((candidate) => candidate <= available.getHours());
+  if (hour === undefined) {
+    available.setDate(available.getDate() - 1);
+    hour = 23;
   }
-  t.setMinutes(0, 0, 0);
-  return { base_date: fmtDate(t), base_time: `${pad(t.getHours())}00` };
+  return `${formatDate(available)}${pad(hour)}`;
 }
 
-// 단기예보: 02,05,08,11,14,17,20,23시 발표(약 10분 후 제공 가정)
-const VILAGE_FCST_HOURS = [2, 5, 8, 11, 14, 17, 20, 23];
+function previousShortForecastBase(d: Date): string {
+  return shortForecastBase(new Date(d.getTime() - 3 * 60 * 60_000));
+}
 
-function vilageFcstBase(d: Date): { base_date: string; base_time: string } {
-  const t = new Date(d.getTime());
-  t.setMinutes(t.getMinutes() - 10); // 발표 후 딜레이 보정
-  let hour = t.getHours();
-  let candidate = [...VILAGE_FCST_HOURS].reverse().find((h) => h <= hour);
-  if (candidate === undefined) {
-    // 자정~새벽2시10분: 전날 23시 자료 사용
-    t.setDate(t.getDate() - 1);
-    candidate = 23;
+function previousBaseValue(base: string): string {
+  const value = new Date(
+    Number(base.slice(0, 4)),
+    Number(base.slice(4, 6)) - 1,
+    Number(base.slice(6, 8)),
+    Number(base.slice(8, 10)),
+    0,
+    0,
+    0
+  );
+  value.setHours(value.getHours() - 3);
+  return formatHour(value);
+}
+
+export function nearestForecastEffect(d: Date): string {
+  const effect = new Date(d.getTime());
+  if (effect.getMinutes() > 0 || effect.getSeconds() > 0 || effect.getMilliseconds() > 0) {
+    effect.setHours(effect.getHours() + 1);
   }
-  t.setHours(candidate, 0, 0, 0);
-  return { base_date: fmtDate(t), base_time: `${pad(candidate)}00` };
+  effect.setMinutes(0, 0, 0);
+  return formatHour(effect);
 }
 
-// 오늘 최저(06시)·최고(15시)가 모두 포함되는 02시 발표본.
-// 02:10 이전에는 아직 오늘 02시 자료가 없으므로 전날 23시 발표본을 사용한다.
-function dailyExtremaBase(d: Date): { base_date: string; base_time: string } {
-  const latestPublished = vilageFcstBase(d);
-  return latestPublished.base_date === fmtDate(d)
-    ? { base_date: fmtDate(d), base_time: "0200" }
-    : latestPublished;
+function extremaBase(d: Date): string {
+  const latest = shortForecastBase(d);
+  return latest.slice(0, 8) === formatDate(d) ? `${formatDate(d)}02` : latest;
 }
 
-interface KmaItem {
-  category: string;
-  obsrValue?: string;
-  fcstValue?: string;
-  fcstDate?: string;
-  fcstTime?: string;
-}
-
-type KmaPortal = "apihub" | "datagokr";
-
-interface KmaPortalConfig {
-  label: string;
-  baseUrl: string;
-  keyName: "authKey" | "serviceKey";
-  key: string;
-}
-
-interface KmaCallResult {
-  items: KmaItem[];
-  portal: KmaPortal;
-}
-
-interface TimedKmaCallResult extends KmaCallResult {
-  base_date: string;
-  base_time: string;
-}
-
-function portalConfig(portal: KmaPortal): KmaPortalConfig {
-  return portal === "apihub"
-    ? {
-        label: "기상청 API허브",
-        baseUrl: APIHUB_BASE_URL,
-        keyName: "authKey",
-        key: env.kmaApiHubAuthKey,
-      }
-    : {
-        label: "공공데이터포털",
-        baseUrl: DATA_GO_KR_BASE_URL,
-        keyName: "serviceKey",
-        key: env.kmaServiceKey,
-      };
-}
-
-function configuredPortals(): KmaPortal[] {
-  const portals: KmaPortal[] = [];
-  if (env.kmaApiHubAuthKey) portals.push("apihub");
-  if (env.kmaServiceKey) portals.push("datagokr");
-  return portals;
+function effectAt(d: Date, hour: number): string {
+  const value = new Date(d.getTime());
+  value.setHours(hour, 0, 0, 0);
+  return formatHour(value);
 }
 
 function escapeRegExp(value: string): string {
@@ -130,16 +114,13 @@ function escapeRegExp(value: string): string {
 
 function sanitizeResponseText(text: string): string {
   let sanitized = text;
-  for (const secret of [env.kmaApiHubAuthKey, env.kmaServiceKey]) {
-    if (!secret) continue;
+  const secret = env.kmaApiHubAuthKey;
+  if (secret) {
     for (const value of new Set([secret, encodeURIComponent(secret)])) {
       sanitized = sanitized.replace(new RegExp(escapeRegExp(value), "g"), "[REDACTED]");
     }
   }
-  sanitized = sanitized.replace(
-    /([?&](?:authKey|serviceKey)=)[^&\s"'<>\]}]+/gi,
-    "$1[REDACTED]",
-  );
+  sanitized = sanitized.replace(/([?&]authKey=)[^&\s"'<>\]}]+/gi, "$1[REDACTED]");
   return sanitized.replace(/https?:\/\/[^\s"'<>]+/gi, (url) => {
     const queryIndex = url.indexOf("?");
     return queryIndex === -1 ? url : `${url.slice(0, queryIndex)}?[REDACTED]`;
@@ -147,168 +128,138 @@ function sanitizeResponseText(text: string): string {
 }
 
 function bodySnippet(text: string): string {
-  const t = sanitizeResponseText(text).replace(/\s+/g, " ").trim();
-  return t ? ` — 응답: ${t.slice(0, 160)}` : "";
+  const normalized = sanitizeResponseText(text).replace(/\s+/g, " ").trim();
+  return normalized ? ` — 응답: ${normalized.slice(0, 160)}` : "";
 }
 
-async function callKmaPortal(
-  portal: KmaPortal,
-  endpoint: string,
-  params: Record<string, string>,
-  parentSignal?: AbortSignal
-): Promise<KmaItem[]> {
-  const config = portalConfig(portal);
-  if (!config.key) throw new Error(`${config.label} 인증키가 설정되지 않았습니다.`);
-  const url = new URL(`${config.baseUrl}/${endpoint}`);
-  url.searchParams.set("pageNo", "1");
-  // 한 지점의 단기예보 전체 범위를 받아 일 최저·최고와 현재 이후의 가장 가까운 값을 함께 고른다.
-  url.searchParams.set("numOfRows", "1000");
-  url.searchParams.set("dataType", "JSON");
-  url.searchParams.set(config.keyName, config.key);
-  for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-
-  const res = await fetch(url.toString(), {
-    cache: "no-store",
-    headers: COMMON_HEADERS,
-    signal: parentSignal
-      ? AbortSignal.any([parentSignal, AbortSignal.timeout(KMA_PROVIDER_TIMEOUT_MS)])
-      : AbortSignal.timeout(KMA_PROVIDER_TIMEOUT_MS),
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status}${bodySnippet(text)}`);
+export function parseShortForecastGrid(text: string): number[] {
+  const withoutComments = text
+    .split(/\r?\n/)
+    .filter((line) => !line.trim().startsWith("#"))
+    .join(" ")
+    .trim();
+  const tokens = withoutComments ? withoutComments.split(/[,\s]+/).filter(Boolean) : [];
+  let dataTokens = tokens;
+  if (
+    tokens.length === GRID_CELL_COUNT + 2 &&
+    Number(tokens[0]) === GRID_NX &&
+    Number(tokens[1]) === GRID_NY
+  ) {
+    dataTokens = tokens.slice(2);
   }
-  let json: any;
-  try {
-    json = JSON.parse(text);
-  } catch {
-    throw new Error(`응답 파싱 실패${bodySnippet(text)}`);
+  if (dataTokens.length !== GRID_CELL_COUNT) {
+    throw new Error(`단기예보 격자자료 개수 오류: ${dataTokens.length}/${GRID_CELL_COUNT}${bodySnippet(text)}`);
   }
-  const header = json?.response?.header;
-  if (header && header.resultCode !== "00") {
-    throw new Error(`응답 오류: ${sanitizeResponseText(String(header.resultMsg ?? header.resultCode))}`);
+  const values = dataTokens.map(Number);
+  if (values.some((value) => !Number.isFinite(value))) {
+    throw new Error(`단기예보 격자자료에 숫자가 아닌 값이 있습니다${bodySnippet(text)}`);
   }
-  const items = json?.response?.body?.items?.item;
-  const normalizedItems = items ? (Array.isArray(items) ? items : [items]) : [];
-  if (normalizedItems.length === 0) {
-    throw new Error("응답 자료가 비어 있습니다");
-  }
-  return normalizedItems;
+  return values;
 }
 
-async function callKma(
-  endpoint: string,
-  params: Record<string, string>,
-  signal?: AbortSignal
-): Promise<KmaCallResult> {
-  const order = configuredPortals();
-  if (order.length === 0) {
-    throw new Error("KMA_AUTH_KEY 또는 KMA_SERVICE_KEY가 설정되지 않았습니다.");
-  }
-  const failures: Array<{ portal: KmaPortal; error: unknown }> = [];
-  for (const portal of order) {
-    try {
-      const items = await callKmaPortal(portal, endpoint, params, signal);
-      return { items, portal };
-    } catch (err) {
-      failures.push({ portal, error: err });
-    }
-  }
-  const detail = failures
-    .map(({ portal, error }) => {
-      const message = error instanceof Error ? error.message : "알 수 없는 오류";
-      return `${portalConfig(portal).label}: ${sanitizeResponseText(message)}`;
-    })
-    .join(" · ");
-  throw new Error(`KMA API 호출 실패 (${endpoint}) · ${detail}`);
-}
-
-function errorMessage(error: unknown): string {
-  return sanitizeResponseText(error instanceof Error ? error.message : "알 수 없는 오류");
-}
-
-async function callKmaWithPreviousBase(
-  endpoint: string,
-  primaryBase: { base_date: string; base_time: string },
-  previousBase: { base_date: string; base_time: string },
+export function shortForecastGridValue(
+  values: number[],
   nx: number,
   ny: number,
-  signal?: AbortSignal
-): Promise<TimedKmaCallResult> {
-  const callAt = async (base: { base_date: string; base_time: string }) => ({
-    ...(await callKma(
-      endpoint,
-      {
-        ...base,
-        nx: String(nx),
-        ny: String(ny),
-      },
-      signal
-    )),
-    ...base,
-  });
+  variable: ShortForecastVariable
+): number | null {
+  if (!Number.isInteger(nx) || !Number.isInteger(ny) || nx < 1 || nx > GRID_NX || ny < 1 || ny > GRID_NY) {
+    throw new Error(`동네예보 격자 범위를 벗어났습니다: nx=${nx}, ny=${ny}`);
+  }
+  if (values.length !== GRID_CELL_COUNT) throw new Error("단기예보 격자자료 크기가 올바르지 않습니다");
+  const value = values[(ny - 1) * GRID_NX + (nx - 1)];
+  return value === -99 || value === MISSING_VALUE[variable] ? null : value;
+}
 
+async function loadGrid(
+  variable: ShortForecastVariable,
+  tmfc: string,
+  tmef: string,
+  parentSignal?: AbortSignal
+): Promise<number[]> {
+  const cacheKey = `${tmfc}:${tmef}:${variable}`;
+  const cached = gridCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.values;
+  if (!env.kmaApiHubAuthKey) throw new Error("KMA_AUTH_KEY가 설정되지 않았습니다");
+
+  const url = new URL(SHORT_FORECAST_GRID_URL);
+  url.searchParams.set("tmfc", tmfc);
+  url.searchParams.set("tmef", tmef);
+  url.searchParams.set("vars", variable);
+  url.searchParams.set("authKey", env.kmaApiHubAuthKey);
+
+  let response: Response;
   try {
-    return await callAt(primaryBase);
+    response = await fetch(url.toString(), {
+      cache: "no-store",
+      headers: COMMON_HEADERS,
+      signal: parentSignal
+        ? AbortSignal.any([parentSignal, AbortSignal.timeout(KMA_GRID_TIMEOUT_MS)])
+        : AbortSignal.timeout(KMA_GRID_TIMEOUT_MS),
+    });
+  } catch (error) {
+    const name = error instanceof Error ? error.name : "";
+    if (name === "AbortError" || name === "TimeoutError") throw new Error("기상청 API허브 응답 시간 초과");
+    throw new Error("기상청 API허브 연결 오류");
+  }
+  const text = await response.text();
+  if (!response.ok) throw new Error(`기상청 API허브 HTTP ${response.status}${bodySnippet(text)}`);
+  const values = parseShortForecastGrid(text);
+  gridCache.set(cacheKey, { values, expiresAt: Date.now() + GRID_CACHE_TTL_MS });
+  if (gridCache.size > 64) {
+    const oldest = gridCache.keys().next().value;
+    if (oldest) gridCache.delete(oldest);
+  }
+  return values;
+}
+
+async function loadPointValue(
+  variable: ShortForecastVariable,
+  primaryBase: string,
+  previousBase: string,
+  effect: string,
+  nx: number,
+  ny: number,
+  signal: AbortSignal
+): Promise<{ value: number | null; base: string }> {
+  try {
+    const values = await loadGrid(variable, primaryBase, effect, signal);
+    return { value: shortForecastGridValue(values, nx, ny, variable), base: primaryBase };
   } catch (primaryError) {
-    const primaryMessage = errorMessage(primaryError);
-    // 인증·네트워크 오류는 발표시각을 바꿔도 같으므로 빈/미발표 응답만 직전 회차로 재시도한다.
-    if (!/(응답 자료가 비어|NO_DATA)/i.test(primaryMessage)) throw primaryError;
+    const message = sanitizeResponseText(primaryError instanceof Error ? primaryError.message : String(primaryError));
+    if (!/격자자료 개수 오류|자료가 비어|NO_DATA/i.test(message)) throw primaryError;
     try {
-      return await callAt(previousBase);
+      const values = await loadGrid(variable, previousBase, effect, signal);
+      return { value: shortForecastGridValue(values, nx, ny, variable), base: previousBase };
     } catch (previousError) {
       throw new Error(
-        `최신 발표 ${primaryBase.base_date} ${primaryBase.base_time}: ${errorMessage(
-          primaryError
-        )} · 직전 발표 ${previousBase.base_date} ${previousBase.base_time}: ${errorMessage(
-          previousError
+        `최신 발표 ${primaryBase}: ${message} · 직전 발표 ${previousBase}: ${sanitizeResponseText(
+          previousError instanceof Error ? previousError.message : String(previousError)
         )}`
       );
     }
   }
 }
 
-function finiteNumber(value: string | undefined): number | null {
-  if (value === undefined || value.trim() === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
+function skyFromCode(code: number | null): WeatherSnapshot["sky"] {
+  if (code === 1) return "clear";
+  if (code === 3) return "cloudy";
+  if (code === 4) return "overcast";
+  return "unknown";
 }
 
-function skyFromCode(code?: string): WeatherSnapshot["sky"] {
-  switch (code) {
-    case "1":
-      return "clear";
-    case "3":
-      return "cloudy";
-    case "4":
-      return "overcast";
-    default:
-      return "unknown";
-  }
+function precipitationFromCode(code: number | null): WeatherSnapshot["precipType"] {
+  if (code === 0) return "none";
+  if (code === 1) return "rain";
+  if (code === 2) return "rain_snow";
+  if (code === 3) return "snow";
+  if (code === 4) return "shower";
+  return "unknown";
 }
 
-function ptyFromCode(code?: string): WeatherSnapshot["precipType"] {
-  switch (code) {
-    case "0":
-      return "none";
-    case "1":
-      return "rain";
-    case "2":
-      return "rain_snow";
-    case "3":
-      return "snow";
-    case "4":
-      return "shower";
-    // 초단기실황의 빗방울/빗방울·눈날림/눈날림 코드
-    case "5":
-      return "rain";
-    case "6":
-      return "rain_snow";
-    case "7":
-      return "snow";
-    default:
-      return "unknown";
-  }
+function precipitationText(value: number | null): string | null {
+  if (value === null || value <= 0) return null;
+  return `${value}mm`;
 }
 
 function fallbackSnapshot(message: string): WeatherSnapshot {
@@ -336,185 +287,89 @@ function fallbackSnapshot(message: string): WeatherSnapshot {
 }
 
 export async function getWeatherSnapshot(lat: number, lng: number): Promise<WeatherSnapshot> {
-  if (!hasKma()) {
-    return fallbackSnapshot("KMA_AUTH_KEY / KMA_SERVICE_KEY 미설정 — 날씨 정보를 불러올 수 없습니다");
+  if (!hasKmaApiHub()) {
+    return fallbackSnapshot("KMA_AUTH_KEY 미설정 — API허브 단기예보를 불러올 수 없습니다");
+  }
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+    return fallbackSnapshot("날씨 조회 좌표가 올바르지 않습니다");
   }
 
   const { nx, ny } = lonLatToGrid(lng, lat);
   const now = nowKst();
-  const requestController = new AbortController();
-  const requestTimeout = setTimeout(() => requestController.abort(), KMA_TOTAL_TIMEOUT_MS);
+  const primaryBase = shortForecastBase(now);
+  const previousBase = previousShortForecastBase(now);
+  const currentEffect = nearestForecastEffect(now);
+  const extremaForecastBase = extremaBase(now);
+  const extremaPreviousBase = previousBaseValue(extremaForecastBase);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), KMA_TOTAL_TIMEOUT_MS);
 
   try {
-    const ncstBase = ultraSrtNcstBase(now);
-    const previousNcstBase = ultraSrtNcstBase(new Date(now.getTime() - 60 * 60 * 1000));
-    const fcstBase = vilageFcstBase(now);
-    const previousFcstBase = vilageFcstBase(new Date(now.getTime() - 3 * 60 * 60 * 1000));
-
-    const [ncstSettled, fcstSettled] = await Promise.allSettled([
-      callKmaWithPreviousBase(
-        "getUltraSrtNcst",
-        ncstBase,
-        previousNcstBase,
-        nx,
-        ny,
-        requestController.signal
-      ),
-      callKmaWithPreviousBase(
-        "getVilageFcst",
-        fcstBase,
-        previousFcstBase,
-        nx,
-        ny,
-        requestController.signal
-      ),
-    ]);
-    const ncstResult = ncstSettled.status === "fulfilled" ? ncstSettled.value : null;
-    const fcstResult = fcstSettled.status === "fulfilled" ? fcstSettled.value : null;
-    const ncstFailure =
-      ncstSettled.status === "rejected" ? errorMessage(ncstSettled.reason) : "";
-    const fcstFailure =
-      fcstSettled.status === "rejected" ? errorMessage(fcstSettled.reason) : "";
-
-    if (!ncstResult && !fcstResult) {
-      throw new Error(`초단기실황: ${ncstFailure} · 단기예보: ${fcstFailure}`);
-    }
-
-    const ncstItems = ncstResult?.items ?? [];
-    const fcstItems = fcstResult?.items ?? [];
-
-    const ncst: Record<string, string> = {};
-    for (const item of ncstItems) {
-      if (item.obsrValue !== undefined) ncst[item.category] = item.obsrValue;
-    }
-
-    // SKY/PTY/POP/TMP 등은 날짜 경계를 포함해 현재 KST 이후 가장 가까운 예보를 사용한다.
-    // 최신 발표본에서 지난 TMN/TMX가 빠졌으면 오늘 극값이 함께 있는 02시(또는 전날 23시) 발표본으로 보완한다.
-    const today = fmtDate(now);
-    const byCategory: Record<string, KmaItem[]> = {};
-    const todayByCategory: Record<string, KmaItem[]> = {};
-    for (const item of fcstItems) {
-      if (!item.fcstDate || !item.fcstTime) continue;
-      (byCategory[item.category] ??= []).push(item);
-      if (item.fcstDate === today) (todayByCategory[item.category] ??= []).push(item);
-    }
-    const currentForecastKey = `${today}${pad(now.getHours())}${pad(now.getMinutes())}`;
-    const forecastKey = (item: KmaItem) =>
-      `${item.fcstDate ?? ""}${(item.fcstTime ?? "").padStart(4, "0")}`;
-    const nearest = (cat: string): string | undefined => {
-      const arr = byCategory[cat];
-      if (!arr || arr.length === 0) return undefined;
-      const sorted = [...arr].sort((a, b) => forecastKey(a).localeCompare(forecastKey(b)));
-      return (
-        sorted.find((item) => forecastKey(item) >= currentForecastKey) ?? sorted.at(-1)
-      )?.fcstValue;
-    };
-    const daily = (cat: string): string | undefined => {
-      const arr = todayByCategory[cat];
-      if (!arr || arr.length === 0) return undefined;
-      return [...arr].sort((a, b) => forecastKey(a).localeCompare(forecastKey(b)))[0]
-        ?.fcstValue;
-    };
-
-    const temp = finiteNumber(ncst.T1H ?? nearest("TMP"));
-    const humidity = finiteNumber(ncst.REH ?? nearest("REH"));
-    const windSpeed = finiteNumber(ncst.WSD ?? nearest("WSD"));
-
-    if (temp === null) {
-      throw new Error("초단기실황과 단기예보 응답에 표시 가능한 기온 값이 없습니다");
-    }
-
-    // 단순 체감온도 근사(겨울철 바람냉각 공식, 그 외엔 실측기온과 동일 처리)
-    let feelsLike = temp;
-    if (temp <= 10 && windSpeed !== null && windSpeed > 1.3) {
-      const v = Math.pow(windSpeed * 3.6, 0.16);
-      feelsLike = Math.round((13.12 + 0.6215 * temp - 11.37 * v + 0.3965 * temp * v) * 10) / 10;
-    }
-
-    let tmxRaw = daily("TMX");
-    let tmnRaw = daily("TMN");
-    let extremaResult: KmaCallResult | null = null;
-    let extremaFailure = "";
-    const responseContainsExtrema = fcstItems.some(
-      (item) => item.category === "TMX" || item.category === "TMN"
+    const variableResults = await Promise.allSettled(
+      CURRENT_VARIABLES.map(async (variable) => ({
+        variable,
+        ...(await loadPointValue(variable, primaryBase, previousBase, currentEffect, nx, ny, controller.signal)),
+      }))
     );
-    if (fcstResult && responseContainsExtrema && (!tmxRaw || !tmnRaw)) {
-      const extremaBase = dailyExtremaBase(now);
-      const isDifferentBase =
-        extremaBase.base_date !== fcstResult.base_date ||
-        extremaBase.base_time !== fcstResult.base_time;
-      if (isDifferentBase) {
-        try {
-          extremaResult = await callKma(
-            "getVilageFcst",
-            {
-              ...extremaBase,
-              nx: String(nx),
-              ny: String(ny),
-            },
-            requestController.signal
-          );
-          for (const item of extremaResult.items) {
-            if (!item.fcstDate || !item.fcstTime || item.fcstDate !== today) continue;
-            (todayByCategory[item.category] ??= []).push(item);
-          }
-          tmxRaw = daily("TMX");
-          tmnRaw = daily("TMN");
-        } catch (error) {
-          extremaFailure = errorMessage(error);
-        }
+    const values = new Map<ShortForecastVariable, number | null>();
+    const failures: string[] = [];
+    let usedBase = primaryBase;
+    for (const result of variableResults) {
+      if (result.status === "fulfilled") {
+        values.set(result.value.variable, result.value.value);
+        if (result.value.variable === "TMP") usedBase = result.value.base;
+      } else {
+        failures.push(sanitizeResponseText(result.reason instanceof Error ? result.reason.message : String(result.reason)));
       }
     }
-    const popRaw = nearest("POP");
-    const precipitation1h = ncst.RN1 ?? nearest("PCP") ?? null;
-    const usedPortals = Array.from(
-      new Set(
-        [ncstResult?.portal, fcstResult?.portal, extremaResult?.portal].filter(
-          (portal): portal is KmaPortal => Boolean(portal)
-        )
-      )
-    );
-    const provider: WeatherSnapshot["provider"] =
-      usedPortals.length > 1
-        ? "MIXED"
-        : usedPortals[0] === "apihub"
-          ? "KMA_APIHUB"
-          : "DATA_GO_KR";
-    const primaryBase = ncstResult ?? fcstResult!;
-    const partialMessages = [
-      ncstFailure ? `초단기실황: ${ncstFailure}` : "",
-      fcstFailure ? `단기예보: ${fcstFailure}` : "",
-      extremaFailure ? `오늘 최고·최저: ${extremaFailure}` : "",
-    ].filter(Boolean);
+
+    const [tmnResult, tmxResult] = await Promise.allSettled([
+      loadPointValue("TMN", extremaForecastBase, extremaPreviousBase, effectAt(now, 6), nx, ny, controller.signal),
+      loadPointValue("TMX", extremaForecastBase, extremaPreviousBase, effectAt(now, 15), nx, ny, controller.signal),
+    ]);
+    if (tmnResult.status === "fulfilled") values.set("TMN", tmnResult.value.value);
+    else failures.push(`최저기온: ${sanitizeResponseText(tmnResult.reason instanceof Error ? tmnResult.reason.message : String(tmnResult.reason))}`);
+    if (tmxResult.status === "fulfilled") values.set("TMX", tmxResult.value.value);
+    else failures.push(`최고기온: ${sanitizeResponseText(tmxResult.reason instanceof Error ? tmxResult.reason.message : String(tmxResult.reason))}`);
+
+    const temp = values.get("TMP") ?? null;
+    if (temp === null) throw new Error(`단기예보 TMP 값이 없습니다${failures.length ? ` · ${failures[0]}` : ""}`);
+    const windSpeed = values.get("WSD") ?? null;
+    let feelsLike = temp;
+    if (temp <= 10 && windSpeed !== null && windSpeed > 1.3) {
+      const velocity = Math.pow(windSpeed * 3.6, 0.16);
+      feelsLike =
+        Math.round((13.12 + 0.6215 * temp - 11.37 * velocity + 0.3965 * temp * velocity) * 10) /
+        10;
+    }
 
     return {
-      provider,
+      provider: "KMA_APIHUB",
       temp,
       feelsLike,
-      sky: skyFromCode(ncst.SKY ?? nearest("SKY")),
-      precipType: ptyFromCode(ncst.PTY ?? nearest("PTY")),
-      precipProbability: finiteNumber(popRaw),
-      humidity,
+      sky: skyFromCode(values.get("SKY") ?? null),
+      precipType: precipitationFromCode(values.get("PTY") ?? null),
+      precipProbability: values.get("POP") ?? null,
+      humidity: values.get("REH") ?? null,
       windSpeed,
-      precipitation1h,
-      tmx: finiteNumber(tmxRaw),
-      tmn: finiteNumber(tmnRaw),
-      baseDate: primaryBase.base_date,
-      baseTime: primaryBase.base_time,
-      observationBaseDate: ncstResult?.base_date ?? null,
-      observationBaseTime: ncstResult?.base_time ?? null,
-      forecastBaseDate: fcstResult?.base_date ?? null,
-      forecastBaseTime: fcstResult?.base_time ?? null,
+      precipitation1h: precipitationText(values.get("PCP") ?? null),
+      tmx: values.get("TMX") ?? null,
+      tmn: values.get("TMN") ?? null,
+      baseDate: usedBase.slice(0, 8),
+      baseTime: `${usedBase.slice(8, 10)}00`,
+      observationBaseDate: null,
+      observationBaseTime: null,
+      forecastBaseDate: usedBase.slice(0, 8),
+      forecastBaseTime: `${usedBase.slice(8, 10)}00`,
       fallback: false,
-      message:
-        partialMessages.length > 0
-          ? `일부 날씨 자료 조회 실패 · ${partialMessages.join(" · ")}`
-          : undefined,
+      message: failures.length ? `일부 단기예보 요소 조회 실패 · ${failures.slice(0, 2).join(" · ")}` : undefined,
     };
-  } catch (err) {
-    return fallbackSnapshot(err instanceof Error ? err.message : "날씨 정보를 불러오는 중 오류가 발생했습니다");
+  } catch (error) {
+    return fallbackSnapshot(
+      sanitizeResponseText(error instanceof Error ? error.message : "날씨 정보를 불러오는 중 오류가 발생했습니다")
+    );
   } finally {
-    clearTimeout(requestTimeout);
+    clearTimeout(timeout);
   }
 }
 
@@ -524,7 +379,6 @@ export interface WeatherAlertResult {
   message?: string;
 }
 
-// wrn_now_data.php 특보종류 코드 → 한글명
 const WRN_KIND_MAP: Record<string, string> = {
   W: "강풍",
   R: "호우",
@@ -539,20 +393,17 @@ const WRN_KIND_MAP: Record<string, string> = {
   F: "안개",
 };
 
-// wrn_now_data.php 특보수준 코드(1:예비, 2:주의보, 3:경보) → 앱 표기
 const WRN_LEVEL_MAP: Record<string, WeatherAlert["alert_level"]> = {
   "1": "예비특보",
   "2": "주의보",
   "3": "경보",
 };
 
-// 발표시각 "202607141100" → ISO(KST)
 function kmaTimeToIso(tm: string | undefined): string | null {
   if (!tm || !/^\d{12}/.test(tm)) return null;
   return `${tm.slice(0, 4)}-${tm.slice(4, 6)}-${tm.slice(6, 8)}T${tm.slice(8, 10)}:${tm.slice(10, 12)}:00+09:00`;
 }
 
-// regionKeyword: 지역명 일부(예: "세종")로 필터링
 export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherAlertResult> {
   if (!hasKmaApiHub()) {
     return { alerts: [], fallback: true, message: "KMA_AUTH_KEY 미설정 — 기상특보를 불러올 수 없습니다" };
@@ -563,48 +414,55 @@ export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherA
     url.searchParams.set("disp", "1");
     url.searchParams.set("help", "0");
 
-    const res = await fetch(url.toString(), {
+    const response = await fetch(url.toString(), {
       cache: "no-store",
       headers: COMMON_HEADERS,
       signal: AbortSignal.timeout(KMA_ALERT_TIMEOUT_MS),
     });
-    const text = await res.text();
-    if (!res.ok) {
+    const text = await response.text();
+    if (!response.ok) {
       const hint =
-        res.status === 401 || res.status === 403
-          ? " · 기상특보는 API허브(apihub.kma.go.kr) 키가 필요합니다. 키 값과 상태를 확인하세요."
+        response.status === 401 || response.status === 403
+          ? " · 기상특보 API 활용승인과 API허브 키 상태를 확인하세요."
           : "";
-      throw new Error(`기상특보 조회 오류: HTTP ${res.status}${bodySnippet(text)}${hint}`);
+      throw new Error(`기상특보 조회 오류: HTTP ${response.status}${bodySnippet(text)}${hint}`);
     }
 
     const lines = text
       .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l && !l.startsWith("#") && l !== "=");
-
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#") && line !== "=");
     const alerts: WeatherAlert[] = lines
-      .map((line, idx) => {
-        // wrn_now_data.php 컬럼 순서: REG_UP, REG_UP_KO, REG_ID, REG_KO, TM_FC, TM_EF, WRN, LVL, CMD, ED_TM
-        const cols = line.split(",").map((c) => c.trim());
-        if (cols.length < 8) return null;
-        const [, regUpKo, regId, regKo, tmFc, tmEf, wrn, lvl] = cols;
-        if (!wrn) return null;
-        const alert: WeatherAlert = {
-          id: `${tmFc || idx}-${regId || idx}-${idx}`,
-          alert_kind: WRN_KIND_MAP[wrn] ?? wrn,
-          alert_level: WRN_LEVEL_MAP[lvl] ?? "주의보",
-          region_codes: [regKo || regUpKo || ""].filter(Boolean),
-          issued_at: kmaTimeToIso(tmFc) ?? new Date().toISOString(),
-          effective_until: kmaTimeToIso(tmEf),
+      .map((line, index): WeatherAlert | null => {
+        const columns = line.split(",").map((column) => column.trim());
+        if (columns.length < 8) return null;
+        const [, regionUpperName, regionId, regionName, issuedAt, effectiveAt, warning, level] = columns;
+        if (!warning) return null;
+        return {
+          id: `${issuedAt || index}-${regionId || index}-${index}`,
+          alert_kind: WRN_KIND_MAP[warning] ?? warning,
+          alert_level: WRN_LEVEL_MAP[level] ?? "주의보",
+          region_codes: [regionName || regionUpperName || ""].filter(Boolean),
+          issued_at: kmaTimeToIso(issuedAt) ?? new Date().toISOString(),
+          effective_until: kmaTimeToIso(effectiveAt),
           source: "kma" as const,
         };
-        return alert;
       })
-      .filter((a): a is WeatherAlert => a !== null)
-      .filter((a) => (regionKeyword ? a.region_codes.some((r) => regionKeywordMatch(r, regionKeyword)) : true));
+      .filter((alert): alert is WeatherAlert => alert !== null)
+      .filter((alert) =>
+        regionKeyword
+          ? alert.region_codes.some((region) => regionKeywordMatch(region, regionKeyword))
+          : true
+      );
 
     return { alerts, fallback: false };
-  } catch (err) {
-    return { alerts: [], fallback: true, message: err instanceof Error ? err.message : "기상특보 조회 중 오류가 발생했습니다" };
+  } catch (error) {
+    return {
+      alerts: [],
+      fallback: true,
+      message: sanitizeResponseText(
+        error instanceof Error ? error.message : "기상특보 조회 중 오류가 발생했습니다"
+      ),
+    };
   }
 }
