@@ -2,10 +2,9 @@
 
 import { useLocationStore } from "@/store/useLocationStore";
 import LocationBar from "@/components/LocationBar";
+import HomeSafetyMap from "@/components/HomeSafetyMap";
 import WeatherCard from "@/components/WeatherCard";
-import SituationCard from "@/components/SituationCard";
 import QuickMenu from "@/components/QuickMenu";
-import ShelterPreviewCard from "@/components/ShelterPreviewCard";
 
 export default function HomePage() {
   const location = useLocationStore((s) => s.location);
@@ -13,10 +12,14 @@ export default function HomePage() {
   return (
     <main className="pb-8">
       <LocationBar />
+      <HomeSafetyMap
+        lat={location.lat}
+        lng={location.lng}
+        regionCode={location.region_code}
+        regionLabel={location.label}
+      />
       <WeatherCard lat={location.lat} lng={location.lng} />
-      <SituationCard regionCode={location.region_code} regionLabel={location.label} />
       <QuickMenu />
-      <ShelterPreviewCard lat={location.lat} lng={location.lng} />
     </main>
   );
 }

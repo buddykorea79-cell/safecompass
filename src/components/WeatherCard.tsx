@@ -22,6 +22,36 @@ const SKY_LABEL: Record<WeatherSnapshot["sky"], string> = {
   unknown: "정보 없음",
 };
 
+const PROVIDER_LABEL: Record<NonNullable<WeatherSnapshot["provider"]>, string> = {
+  KMA_APIHUB: "기상청 API허브",
+  DATA_GO_KR: "공공데이터포털 동네예보",
+  MIXED: "기상청 API허브·공공데이터포털",
+};
+
+function formatBaseTime(baseDate: string | null, baseTime: string | null): string | null {
+  if (!baseDate || !baseTime || !/^\d{8}$/.test(baseDate) || !/^\d{4}$/.test(baseTime)) {
+    return null;
+  }
+  return `${baseDate.slice(4, 6)}.${baseDate.slice(6, 8)} ${baseTime.slice(0, 2)}:${baseTime.slice(2, 4)}`;
+}
+
+function formatBasis(data: WeatherSnapshot): string {
+  const observation = formatBaseTime(data.observationBaseDate, data.observationBaseTime);
+  const forecast = formatBaseTime(data.forecastBaseDate, data.forecastBaseTime);
+  return [observation ? `실황 ${observation}` : "", forecast ? `단기예보 ${forecast}` : ""]
+    .filter(Boolean)
+    .join(" · ") || "기준시각 확인 불가";
+}
+
+function formatPrecipitation(value: string | null): string | null {
+  if (!value) return null;
+  const normalized = value.trim();
+  if (!normalized || /강수\s*없음/.test(normalized)) return null;
+  const numeric = Number(normalized);
+  if (Number.isFinite(numeric)) return numeric > 0 ? `${numeric} mm` : null;
+  return normalized;
+}
+
 export default function WeatherCard({ lat, lng }: { lat: number; lng: number }) {
   const [data, setData] = useState<WeatherSnapshot | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,6 +75,8 @@ export default function WeatherCard({ lat, lng }: { lat: number; lng: number }) 
     };
   }, [lat, lng]);
 
+  const precipitation = formatPrecipitation(data?.precipitation1h ?? null);
+
   return (
     <div className="mx-5 mt-3 rounded-2xl bg-white p-5 shadow-card">
       {loading ? (
@@ -58,27 +90,48 @@ export default function WeatherCard({ lat, lng }: { lat: number; lng: number }) 
           </div>
         </div>
       ) : (
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <WeatherIcon sky={data.sky} precipType={data.precipType} />
-            <div>
-              <p className="text-3xl font-bold text-slate-800">{Math.round(data.temp)}°</p>
-              <p className="text-xs text-slate-400">
-                {SKY_LABEL[data.sky]}
-                {data.feelsLike !== null && ` · 체감 ${Math.round(data.feelsLike)}°`}
-              </p>
+        <div>
+          <div className="flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <WeatherIcon sky={data.sky} precipType={data.precipType} />
+              <div>
+                <p className="text-3xl font-bold text-slate-800">{Math.round(data.temp)}°</p>
+                <p className="text-xs text-slate-400">
+                  {SKY_LABEL[data.sky]}
+                  {data.feelsLike !== null && ` · 체감 ${Math.round(data.feelsLike)}°`}
+                </p>
+              </div>
+            </div>
+            <div className="text-right text-xs text-slate-400">
+              {(data.tmx !== null || data.tmn !== null) && (
+                <p>
+                  {data.tmx !== null && (
+                    <>
+                      최고 <span className="font-semibold text-red-400">{Math.round(data.tmx)}°</span>
+                    </>
+                  )}
+                  {data.tmx !== null && data.tmn !== null && " / "}
+                  {data.tmn !== null && (
+                    <>
+                      최저 <span className="font-semibold text-blue-400">{Math.round(data.tmn)}°</span>
+                    </>
+                  )}
+                </p>
+              )}
+              {data.precipProbability !== null && <p className="mt-1">강수확률 {data.precipProbability}%</p>}
+              {precipitation && <p className="mt-1">강수량 {precipitation}</p>}
+              {data.humidity !== null && <p className="mt-1">습도 {data.humidity}%</p>}
+              {data.windSpeed !== null && <p className="mt-1">바람 {data.windSpeed} m/s</p>}
             </div>
           </div>
-          <div className="text-right text-xs text-slate-400">
-            {data.tmx !== null && data.tmn !== null && (
-              <p>
-                최고 <span className="font-semibold text-red-400">{Math.round(data.tmx)}°</span> / 최저{" "}
-                <span className="font-semibold text-blue-400">{Math.round(data.tmn)}°</span>
-              </p>
-            )}
-            {data.precipProbability !== null && <p className="mt-1">강수확률 {data.precipProbability}%</p>}
-            {data.humidity !== null && <p className="mt-1">습도 {data.humidity}%</p>}
-          </div>
+          {data.provider && (
+            <p className="mt-3 border-t border-slate-100 pt-2 text-[11px] text-slate-400">
+              {PROVIDER_LABEL[data.provider]} · {formatBasis(data)}
+            </p>
+          )}
+          {data.message && (
+            <p className="mt-1 text-[10px] leading-relaxed text-amber-700">{data.message}</p>
+          )}
         </div>
       )}
     </div>

@@ -4,7 +4,10 @@ import { hasAdminPassword } from "@/lib/env";
 
 export async function POST(req: NextRequest) {
   if (!hasAdminPassword()) {
-    return NextResponse.json({ error: "ADMIN_PASSWORD 미설정 — 관리자 콘솔을 사용할 수 없습니다" }, { status: 503 });
+    return NextResponse.json(
+      { error: "ADMIN_PASSWORD / ADMIN_SESSION_SECRET 미설정 — 관리자 콘솔을 사용할 수 없습니다" },
+      { status: 503 }
+    );
   }
   const body = await req.json().catch(() => null);
   const password: string = body?.password ?? "";

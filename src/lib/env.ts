@@ -26,7 +26,8 @@ const safetydata10748 = cleanKey(process.env.SAFETYDATA_SERVICE10748_KEY);
 const safetydata00247 = cleanKey(process.env.SAFETYDATA_SERVICE00247_KEY);
 
 export const env = {
-  kmaAuthKey: cleanKey(process.env.KMA_AUTH_KEY),
+  kmaApiHubAuthKey: cleanKey(process.env.KMA_AUTH_KEY),
+  kmaServiceKey: cleanKey(process.env.KMA_SERVICE_KEY),
   safetydataService10748Key: safetydata10748 || legacySafetydataKey,
   safetydataService00247Key: safetydata00247 || legacySafetydataKey,
   safetydataServiceKey: legacySafetydataKey || safetydata00247 || safetydata10748,
@@ -36,18 +37,21 @@ export const env = {
   bizrouterApiKey: (process.env.BIZROUTER_API_KEY ?? "").trim(),
   bizrouterChatModel: process.env.BIZROUTER_CHAT_MODEL || "gpt-4o-mini",
   bizrouterEmbeddingModel: process.env.BIZROUTER_EMBEDDING_MODEL || "text-embedding-3-small",
-  adminPassword: process.env.ADMIN_PASSWORD || "21002100",
-  adminSessionSecret: process.env.ADMIN_SESSION_SECRET || "dev-only-insecure-secret-change-me",
+  adminPassword: (process.env.ADMIN_PASSWORD ?? "").trim(),
+  adminSessionSecret: (process.env.ADMIN_SESSION_SECRET ?? "").trim(),
 };
 
-export const hasKma = () => Boolean(env.kmaAuthKey);
+export const hasKmaApiHub = () => Boolean(env.kmaApiHubAuthKey);
+export const hasKmaPublicData = () => Boolean(env.kmaServiceKey);
+export const hasKma = () => hasKmaApiHub() || hasKmaPublicData();
 export const hasSafetydata10748 = () => Boolean(env.safetydataService10748Key);
 export const hasSafetydata00247 = () => Boolean(env.safetydataService00247Key);
 export const hasSafetydata = () => Boolean(env.safetydataServiceKey);
 export const hasKakaoRest = () => Boolean(env.kakaoRestApiKey);
 export const hasKakaoJs = () => Boolean(env.kakaoJsKey);
 export const hasBizrouter = () => Boolean(env.bizrouterBaseUrl && env.bizrouterApiKey);
-export const hasAdminPassword = () => Boolean(env.adminPassword);
+// 둘 중 하나라도 빠지면 관리자 인증을 fail-closed로 비활성화한다.
+export const hasAdminPassword = () => Boolean(env.adminPassword && env.adminSessionSecret);
 
 export interface ProviderStatus {
   provider: "kma" | "safetydata" | "kakao" | "bizrouter";
@@ -57,6 +61,13 @@ export interface ProviderStatus {
 }
 
 export function providerStatuses(): ProviderStatus[] {
+  const configuredKmaKeys = [
+    hasKmaApiHub() ? "KMA_AUTH_KEY(API허브)" : "",
+    hasKmaPublicData() ? "KMA_SERVICE_KEY(공공데이터포털)" : "",
+  ].filter(Boolean);
+  const kmaDetail = configuredKmaKeys.length
+    ? `${configuredKmaKeys.join(" / ")} 설정됨${hasKmaApiHub() ? "" : " · 기상특보는 KMA_AUTH_KEY가 필요합니다"}`
+    : "KMA_AUTH_KEY / KMA_SERVICE_KEY 미설정 — 날씨/특보 데이터를 가져올 수 없습니다";
   const safetydataMissing = [
     hasSafetydata10748() ? "" : "SAFETYDATA_SERVICE10748_KEY(재난문자 속보) 미설정",
     hasSafetydata00247() ? "" : "SAFETYDATA_SERVICE00247_KEY(긴급재난문자) 미설정",
@@ -66,9 +77,9 @@ export function providerStatuses(): ProviderStatus[] {
   return [
     {
       provider: "kma",
-      label: "기상청 API 허브",
+      label: "기상청 날씨 API",
       configured: hasKma(),
-      detail: hasKma() ? "KMA_AUTH_KEY 설정됨" : "KMA_AUTH_KEY 미설정 — 날씨/특보 데이터를 가져올 수 없습니다",
+      detail: kmaDetail,
     },
     {
       provider: "safetydata",

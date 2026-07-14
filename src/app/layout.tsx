@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import BottomNav from "@/components/BottomNav";
+import PublicHeader from "@/components/PublicHeader";
 import ServiceWorkerRegister from "@/components/ServiceWorkerRegister";
 
 export const metadata: Metadata = {
@@ -25,7 +26,10 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="ko">
       <body className="font-sans antialiased">
-        <div className="mx-auto min-h-screen max-w-lg bg-[#f6f7f9] pb-24">{children}</div>
+        <div className="mx-auto min-h-screen max-w-lg bg-[#f6f7f9] pb-24">
+          <PublicHeader />
+          {children}
+        </div>
         <BottomNav />
         <ServiceWorkerRegister />
       </body>

@@ -17,7 +17,7 @@ export function createSessionToken(): string {
 }
 
 export function verifySessionToken(token: string | undefined | null): boolean {
-  if (!token) return false;
+  if (!hasAdminPassword() || !token) return false;
   const [payload, sig] = token.split(".");
   if (!payload || !sig) return false;
   const expected = sign(payload);

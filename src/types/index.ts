@@ -37,16 +37,23 @@ export interface LocationState {
 }
 
 export interface WeatherSnapshot {
+  provider: "KMA_APIHUB" | "DATA_GO_KR" | "MIXED" | null;
   temp: number | null; // 현재기온
   feelsLike: number | null; // 체감온도(단순 근사)
   sky: "clear" | "partly_cloudy" | "cloudy" | "overcast" | "unknown";
   precipType: "none" | "rain" | "rain_snow" | "snow" | "shower" | "unknown";
   precipProbability: number | null; // %
   humidity: number | null;
+  windSpeed: number | null; // m/s
+  precipitation1h: string | null;
   tmx: number | null; // 최고기온
   tmn: number | null; // 최저기온
   baseDate: string;
   baseTime: string;
+  observationBaseDate: string | null;
+  observationBaseTime: string | null;
+  forecastBaseDate: string | null;
+  forecastBaseTime: string | null;
   fallback: boolean; // 실제 데이터 조회 실패 시 true
   message?: string;
 }

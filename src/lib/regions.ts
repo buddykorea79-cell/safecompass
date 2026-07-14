@@ -336,6 +336,11 @@ export function listSigunguBySido(sido: string): RegionSeed[] {
 
 export const DEFAULT_REGION: RegionSeed = REGIONS.find((r0) => r0.eupmyeondong === "어진동")!;
 
+export function isNationwideRegionText(regionText: string): boolean {
+  const normalized = regionText.replace(/\s+/g, "").trim();
+  return normalized.startsWith("전국") || normalized === "대한민국전역";
+}
+
 // 알림 지역 필터 매칭.
 // 사용자 위치 라벨은 "세종특별자치시 어진동"처럼 여러 토큰이지만 API가 주는 지역명은
 // "세종특별자치시" 단위인 경우가 많아, 토큰 단위 부분일치까지 허용한다.
@@ -343,6 +348,9 @@ export function regionKeywordMatch(regionText: string, keyword: string): boolean
   const region = regionText.trim();
   const kw = keyword.trim();
   if (!region || !kw) return false;
+  // 전국 대상 알림은 어떤 현재 위치에서도 누락되면 안 된다. 지도에서는 좌표를
+  // 임의로 만들지 않고 별도의 전국 상황 텍스트로 표시한다.
+  if (isNationwideRegionText(region)) return true;
   if (region.includes(kw) || kw.includes(region)) return true;
   return kw.split(/[\s,]+/).some((token) => token.length >= 2 && region.includes(token));
 }

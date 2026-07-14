@@ -7,10 +7,16 @@ import OpenAI from "openai";
 import { env, hasBizrouter } from "./env";
 
 let client: OpenAI | null = null;
+const BIZROUTER_TIMEOUT_MS = 8_000;
 
 function getClient(): OpenAI {
   if (!client) {
-    client = new OpenAI({ baseURL: env.bizrouterBaseUrl, apiKey: env.bizrouterApiKey });
+    client = new OpenAI({
+      baseURL: env.bizrouterBaseUrl,
+      apiKey: env.bizrouterApiKey,
+      timeout: BIZROUTER_TIMEOUT_MS,
+      maxRetries: 0,
+    });
   }
   return client;
 }

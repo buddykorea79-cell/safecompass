@@ -8,6 +8,7 @@ import { distanceMeters } from "./geo";
 import type { Place } from "@/types";
 
 const LOCAL_BASE = "https://dapi.kakao.com/v2/local";
+const KAKAO_FETCH_TIMEOUT_MS = 8_000;
 
 async function callKakao(path: string, params: Record<string, string>) {
   const url = new URL(`${LOCAL_BASE}${path}`);
@@ -15,6 +16,7 @@ async function callKakao(path: string, params: Record<string, string>) {
   const res = await fetch(url.toString(), {
     headers: { Authorization: `KakaoAK ${env.kakaoRestApiKey}` },
     cache: "no-store",
+    signal: AbortSignal.timeout(KAKAO_FETCH_TIMEOUT_MS),
   });
   if (!res.ok) {
     throw new Error(`카카오 로컬 API 오류: HTTP ${res.status}`);

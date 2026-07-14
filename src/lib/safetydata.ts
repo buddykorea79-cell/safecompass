@@ -10,6 +10,7 @@ import { regionKeywordMatch } from "./regions";
 import type { DisasterMessage, Shelter, ShelterType } from "@/types";
 
 const BASE_URL = "https://www.safetydata.go.kr/V2/api";
+const SAFETYDATA_FETCH_TIMEOUT_MS = 8_000;
 
 // 재난문자(속보) — DSSP-IF-10748
 const BREAKING_MSG_SERVICE_ID = "DSSP-IF-10748";
@@ -50,7 +51,10 @@ async function callSafetydata<T = any>(
   url.searchParams.set("numOfRows", "100");
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
-  const res = await fetch(url.toString(), { cache: "no-store" });
+  const res = await fetch(url.toString(), {
+    cache: "no-store",
+    signal: AbortSignal.timeout(SAFETYDATA_FETCH_TIMEOUT_MS),
+  });
   if (!res.ok) {
     throw new Error(`재난안전데이터포털 응답 오류 (${serviceId}): HTTP ${res.status}`);
   }
