@@ -1,22 +1,39 @@
 // 환경변수 접근 + "키가 설정되어 있는가" 판별 헬퍼.
 // 모든 외부 API 어댑터는 이 모듈을 통해서만 키를 읽는다 (설계서 2.2 원칙: 키는 서버에서만 보관).
 
+// 환경변수 값 정리:
+// - 복사/붙여넣기 과정에서 섞이는 앞뒤 공백·개행은 인증 403의 흔한 원인이라 항상 제거한다.
+// - 포털이 "URL 인코딩된 키"(%2B, %3D 포함)를 제공하는 경우가 있는데, 이 값을 그대로 넣으면
+//   요청 시 이중 인코딩되어 인증에 실패하므로 원본으로 복원해 보관한다.
+function cleanKey(raw: string | undefined): string {
+  const key = (raw ?? "").trim();
+  if (/%[0-9A-Fa-f]{2}/.test(key)) {
+    try {
+      return decodeURIComponent(key);
+    } catch {
+      return key;
+    }
+  }
+  return key;
+}
+
 // 재난안전데이터포털은 서비스(API)별로 키가 따로 발급된다.
 // - SAFETYDATA_SERVICE10748_KEY: DSSP-IF-10748 재난문자(속보)
 // - SAFETYDATA_SERVICE00247_KEY: DSSP-IF-00247 긴급재난문자
 // - SAFETYDATA_SERVICE_KEY:      (레거시/공용) 위 키가 없을 때의 폴백 + 대피소 등 기타 서비스
-const legacySafetydataKey = process.env.SAFETYDATA_SERVICE_KEY || "";
+const legacySafetydataKey = cleanKey(process.env.SAFETYDATA_SERVICE_KEY);
+const safetydata10748 = cleanKey(process.env.SAFETYDATA_SERVICE10748_KEY);
+const safetydata00247 = cleanKey(process.env.SAFETYDATA_SERVICE00247_KEY);
 
 export const env = {
-  kmaAuthKey: process.env.KMA_AUTH_KEY || "",
-  safetydataService10748Key: process.env.SAFETYDATA_SERVICE10748_KEY || legacySafetydataKey,
-  safetydataService00247Key: process.env.SAFETYDATA_SERVICE00247_KEY || legacySafetydataKey,
-  safetydataServiceKey:
-    legacySafetydataKey || process.env.SAFETYDATA_SERVICE00247_KEY || process.env.SAFETYDATA_SERVICE10748_KEY || "",
-  kakaoRestApiKey: process.env.KAKAO_REST_API_KEY || "",
-  kakaoJsKey: process.env.NEXT_PUBLIC_KAKAO_JS_KEY || "",
-  bizrouterBaseUrl: process.env.BIZROUTER_BASE_URL || "",
-  bizrouterApiKey: process.env.BIZROUTER_API_KEY || "",
+  kmaAuthKey: cleanKey(process.env.KMA_AUTH_KEY),
+  safetydataService10748Key: safetydata10748 || legacySafetydataKey,
+  safetydataService00247Key: safetydata00247 || legacySafetydataKey,
+  safetydataServiceKey: legacySafetydataKey || safetydata00247 || safetydata10748,
+  kakaoRestApiKey: cleanKey(process.env.KAKAO_REST_API_KEY),
+  kakaoJsKey: (process.env.NEXT_PUBLIC_KAKAO_JS_KEY ?? "").trim(),
+  bizrouterBaseUrl: (process.env.BIZROUTER_BASE_URL ?? "").trim(),
+  bizrouterApiKey: (process.env.BIZROUTER_API_KEY ?? "").trim(),
   bizrouterChatModel: process.env.BIZROUTER_CHAT_MODEL || "gpt-4o-mini",
   bizrouterEmbeddingModel: process.env.BIZROUTER_EMBEDDING_MODEL || "text-embedding-3-small",
   adminPassword: process.env.ADMIN_PASSWORD || "21002100",

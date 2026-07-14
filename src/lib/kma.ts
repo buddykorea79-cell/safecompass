@@ -9,10 +9,16 @@ import { regionKeywordMatch } from "./regions";
 import type { WeatherAlert, WeatherSnapshot } from "@/types";
 
 const BASE_URL = "https://apihub.kma.go.kr/api/typ02/openApi/VilageFcstInfoService_2.0";
+// 동일 서비스가 공공데이터포털(apis.data.go.kr)에도 있어, API허브 키가 아닌
+// 공공데이터포털 서비스키를 등록한 경우를 위해 인증 실패(401/403) 시 이쪽으로 재시도한다.
+const DATA_GO_KR_BASE_URL = "https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0";
 // 기상특보 현황(typ01/url) — docs/예특보.txt에 상세 응답 필드가 문서화되어 있지 않아
 // KMA API 허브의 공개된 특보 조회 표준 엔드포인트를 best-effort로 사용한다.
 // 실제 키 등록 후 응답 필드명 보정이 필요할 수 있다.
 const WARNING_URL = "https://apihub.kma.go.kr/api/typ01/url/wrn_now_data.php";
+
+// 일부 공공 API 앞단 방화벽이 User-Agent 없는 요청을 403으로 차단하는 사례가 있어 항상 붙인다.
+const COMMON_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; SafeCompass/1.0)", Accept: "*/*" };
 
 function pad(n: number, len = 2): string {
   return String(n).padStart(len, "0");
@@ -64,19 +70,42 @@ interface KmaItem {
   fcstTime?: string;
 }
 
-async function callKma(endpoint: string, params: Record<string, string>): Promise<KmaItem[]> {
-  const url = new URL(`${BASE_URL}/${endpoint}`);
+type KmaPortal = "apihub" | "datagokr";
+
+// 인스턴스 생명주기 동안 마지막으로 인증에 성공한 포털을 기억해 불필요한 재시도를 줄인다.
+let workingPortal: KmaPortal | null = null;
+
+function bodySnippet(text: string): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  return t ? ` — 응답: ${t.slice(0, 160)}` : "";
+}
+
+async function callKmaPortal(portal: KmaPortal, endpoint: string, params: Record<string, string>): Promise<KmaItem[]> {
+  const base = portal === "apihub" ? BASE_URL : DATA_GO_KR_BASE_URL;
+  const url = new URL(`${base}/${endpoint}`);
   url.searchParams.set("pageNo", "1");
   url.searchParams.set("numOfRows", "300");
   url.searchParams.set("dataType", "JSON");
-  url.searchParams.set("authKey", env.kmaAuthKey);
+  // API허브는 authKey, 공공데이터포털은 serviceKey 파라미터를 쓴다
+  url.searchParams.set(portal === "apihub" ? "authKey" : "serviceKey", env.kmaAuthKey);
   for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
 
-  const res = await fetch(url.toString(), { cache: "no-store" });
+  const res = await fetch(url.toString(), { cache: "no-store", headers: COMMON_HEADERS });
+  const text = await res.text();
   if (!res.ok) {
-    throw new Error(`KMA API 응답 오류 (${endpoint}): HTTP ${res.status}`);
+    const err = new Error(`KMA API 응답 오류 (${endpoint}): HTTP ${res.status}${bodySnippet(text)}`);
+    (err as any).status = res.status;
+    throw err;
   }
-  const json = await res.json();
+  let json: any;
+  try {
+    json = JSON.parse(text);
+  } catch {
+    // 공공데이터포털은 인증 오류를 HTTP 200 + XML(OpenAPI_ServiceResponse)로 주므로 인증 실패로 취급
+    const err = new Error(`KMA API 응답 파싱 실패 (${endpoint})${bodySnippet(text)}`);
+    (err as any).status = /SERVICE.?KEY|UNREGISTERED|정지|등록되지 않은/i.test(text) ? 403 : undefined;
+    throw err;
+  }
   const header = json?.response?.header;
   if (header && header.resultCode !== "00") {
     throw new Error(`KMA API 오류 (${endpoint}): ${header.resultMsg ?? header.resultCode}`);
@@ -84,6 +113,31 @@ async function callKma(endpoint: string, params: Record<string, string>): Promis
   const items = json?.response?.body?.items?.item;
   if (!items) return [];
   return Array.isArray(items) ? items : [items];
+}
+
+function isAuthError(err: unknown): boolean {
+  const status = (err as any)?.status;
+  return status === 401 || status === 403;
+}
+
+async function callKma(endpoint: string, params: Record<string, string>): Promise<KmaItem[]> {
+  const order: KmaPortal[] =
+    workingPortal === "datagokr" ? ["datagokr", "apihub"] : ["apihub", "datagokr"];
+  let lastError: unknown;
+  for (const portal of order) {
+    try {
+      const items = await callKmaPortal(portal, endpoint, params);
+      workingPortal = portal;
+      return items;
+    } catch (err) {
+      lastError = err;
+      // 인증 문제일 때만 다른 포털로 재시도 (그 외 오류는 즉시 전달)
+      if (!isAuthError(err)) throw err;
+    }
+  }
+  throw new Error(
+    `${lastError instanceof Error ? lastError.message : "KMA API 인증 실패"} · 기상청 API허브(apihub.kma.go.kr)와 공공데이터포털 양쪽 모두 인증에 실패했습니다. KMA_AUTH_KEY 값이 정확한지, API허브 마이페이지에서 키가 "정상" 상태인지 확인하세요.`
+  );
 }
 
 function skyFromCode(code?: string): WeatherSnapshot["sky"] {
@@ -246,9 +300,15 @@ export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherA
     url.searchParams.set("disp", "1");
     url.searchParams.set("help", "0");
 
-    const res = await fetch(url.toString(), { cache: "no-store" });
-    if (!res.ok) throw new Error(`기상특보 조회 오류: HTTP ${res.status}`);
+    const res = await fetch(url.toString(), { cache: "no-store", headers: COMMON_HEADERS });
     const text = await res.text();
+    if (!res.ok) {
+      const hint =
+        res.status === 401 || res.status === 403
+          ? " · 기상특보는 API허브(apihub.kma.go.kr) 키가 필요합니다. 키 값과 상태를 확인하세요."
+          : "";
+      throw new Error(`기상특보 조회 오류: HTTP ${res.status}${bodySnippet(text)}${hint}`);
+    }
 
     const lines = text
       .split("\n")
