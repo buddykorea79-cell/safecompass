@@ -6,6 +6,7 @@ import {
   kakaoMapCreateError,
   kakaoMapErrorView,
   loadKakaoMapSdk,
+  waitForInitialKakaoMapTiles,
   type KakaoMapErrorView,
 } from "@/lib/kakaoMapSdk";
 import type { DisasterLevel, Place, Shelter } from "@/types";
@@ -76,11 +77,12 @@ export default function KakaoMap({
     let cancelled = false;
     let map: any = null;
     let handleDragEnd: (() => void) | null = null;
+    const tileController = new AbortController();
 
     setReady(false);
     setError(null);
     loadKakaoMapSdk(KAKAO_JS_KEY)
-      .then(() => {
+      .then(async () => {
         if (cancelled || !containerRef.current) return;
         const currentCenter = centerRef.current;
         try {
@@ -99,12 +101,14 @@ export default function KakaoMap({
         };
         window.kakao.maps.event.addListener(map, "dragend", handleDragEnd);
         setPickCenter(currentCenter);
-        setReady(true);
+        const tilesReady = waitForInitialKakaoMapTiles(map, 15_000, tileController.signal);
         window.requestAnimationFrame(() => {
           if (cancelled || mapRef.current !== map) return;
           map.relayout();
           map.setCenter(new window.kakao.maps.LatLng(currentCenter.lat, currentCenter.lng));
         });
+        await tilesReady;
+        if (!cancelled && mapRef.current === map) setReady(true);
       })
       .catch((cause: unknown) => {
         if (cancelled) return;
@@ -113,6 +117,7 @@ export default function KakaoMap({
 
     return () => {
       cancelled = true;
+      tileController.abort();
       markerObjsRef.current.forEach((marker) => marker.setMap(null));
       markerObjsRef.current = [];
       situationOverlayRef.current?.setMap(null);

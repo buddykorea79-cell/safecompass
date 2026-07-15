@@ -1,4 +1,5 @@
 import type { DisasterMessage, WeatherAlert } from "@/types";
+import { retainCurrentOfficialAlerts } from "./officialAlertRetention";
 
 export type OfficialAlertFilter = "all" | "emergency" | "breaking" | "weather";
 export type UnifiedOfficialAlert =
@@ -32,6 +33,7 @@ export function paginateOfficialAlerts({
   requestedPage,
   pageSize,
   requestedId,
+  now,
 }: {
   messages: DisasterMessage[];
   weatherAlerts: WeatherAlert[];
@@ -39,11 +41,15 @@ export function paginateOfficialAlerts({
   requestedPage: number;
   pageSize: number;
   requestedId?: string;
+  now?: Date;
 }): OfficialAlertsPage {
-  const merged: UnifiedOfficialAlert[] = [
-    ...messages.map((message) => ({ kind: "message" as const, ...message })),
-    ...weatherAlerts.map((alert) => ({ kind: "weather" as const, ...alert })),
-  ].sort((a, b) => new Date(b.issued_at).getTime() - new Date(a.issued_at).getTime());
+  const merged: UnifiedOfficialAlert[] = retainCurrentOfficialAlerts(
+    [
+      ...messages.map((message) => ({ kind: "message" as const, ...message })),
+      ...weatherAlerts.map((alert) => ({ kind: "weather" as const, ...alert })),
+    ],
+    now
+  ).sort((a, b) => new Date(b.issued_at).getTime() - new Date(a.issued_at).getTime());
 
   const filtered = merged
     .filter((item) => matchesFilter(item, filter))

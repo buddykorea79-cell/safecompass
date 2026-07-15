@@ -96,4 +96,49 @@ describe("통합대피소 JSON 스냅샷", () => {
 
     expect(result).toMatchObject({ storage: "vercel-blob", size: 512, validCount: 1 });
   });
+
+  it("Vercel Blob의 실제 미존재 오류를 저장본 없음으로 처리한다", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "blob-secret";
+    headMock.mockRejectedValue(new Error("Vercel Blob: The requested blob does not exist"));
+
+    const { getShelterSnapshotSummary, loadShelterSnapshot } = await import("./shelterSnapshot");
+
+    await expect(getShelterSnapshotSummary()).resolves.toBeNull();
+    await expect(loadShelterSnapshot()).rejects.toThrow("관리자 페이지에서 '새로 받기'를 실행");
+  });
+
+  it("Blob DNS 장애는 저장본 없음으로 숨기지 않고 원래 오류를 반환한다", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "blob-secret";
+    headMock.mockRejectedValue(
+      Object.assign(new Error("getaddrinfo ENOTFOUND blob.vercel-storage.com"), {
+        code: "ENOTFOUND",
+      })
+    );
+
+    const { getShelterSnapshotSummary } = await import("./shelterSnapshot");
+
+    await expect(getShelterSnapshotSummary()).rejects.toThrow("ENOTFOUND");
+  });
+
+  it("저장본이 없던 Blob 경로에도 새 스냅샷을 생성한다", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "blob-secret";
+    headMock.mockRejectedValue(new Error("Vercel Blob: The requested blob does not exist"));
+    putMock.mockResolvedValue({
+      url: "https://public.blob.vercel-storage.com/safecompass/integrated-shelters.json",
+      downloadUrl: "https://public.blob.vercel-storage.com/safecompass/integrated-shelters.json?download=1",
+    });
+
+    const { getShelterSnapshotSummary, saveShelterSnapshot } = await import("./shelterSnapshot");
+
+    await expect(getShelterSnapshotSummary()).resolves.toBeNull();
+    await expect(saveShelterSnapshot(downloadFixture())).resolves.toMatchObject({
+      storage: "vercel-blob",
+      validCount: 1,
+    });
+    expect(putMock).toHaveBeenCalledWith(
+      "safecompass/integrated-shelters.json",
+      expect.any(String),
+      expect.objectContaining({ allowOverwrite: true, addRandomSuffix: false })
+    );
+  });
 });

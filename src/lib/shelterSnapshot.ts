@@ -6,6 +6,8 @@ import type { IntegratedShelterDownload } from "./safetydata";
 import type { Shelter, ShelterTypeCode } from "@/types";
 
 export const SHELTER_SNAPSHOT_PATHNAME = "safecompass/integrated-shelters.json";
+export const MISSING_SHELTER_SNAPSHOT_MESSAGE =
+  "통합대피소 JSON이 없습니다. SAFETYDATA_SERVICE10941_KEY와 BLOB_READ_WRITE_TOKEN을 설정한 뒤 관리자 페이지에서 '새로 받기'를 실행해 주세요.";
 const LOCAL_SNAPSHOT_PATH = path.join(process.cwd(), "data", "runtime", "integrated-shelters.json");
 const MEMORY_CACHE_TTL_MS = 5 * 60 * 1000;
 
@@ -33,6 +35,29 @@ export interface ShelterSnapshotSummary {
 }
 
 let memoryCache: { snapshot: ShelterSnapshot; expiresAt: number } | null = null;
+
+function isMissingSnapshotError(error: unknown): boolean {
+  const candidate = error as {
+    name?: unknown;
+    message?: unknown;
+    code?: unknown;
+    status?: unknown;
+    statusCode?: unknown;
+  };
+  const status = Number(candidate?.status ?? candidate?.statusCode);
+  const code = typeof candidate?.code === "string" ? candidate.code.trim().toUpperCase() : "";
+  const name = String(candidate?.name ?? "").trim();
+  const detail = String(candidate?.message ?? error ?? "");
+
+  return (
+    status === 404 ||
+    code === "ENOENT" ||
+    code === "BLOB_NOT_FOUND" ||
+    /^BlobNotFound(?:Error)?$/i.test(name) ||
+    /Vercel Blob:\s*The requested blob does not exist/i.test(detail) ||
+    /\bno such file(?: or directory)?\b/i.test(detail)
+  );
+}
 
 function isShelter(value: unknown): value is Shelter {
   const item = value as Shelter;
@@ -114,10 +139,7 @@ export async function loadShelterSnapshot(): Promise<ShelterSnapshot> {
       ? (await loadFromBlob()).snapshot
       : (await loadFromLocalFile()).snapshot;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/BlobNotFound|ENOENT|not found/i.test(`${(error as any)?.name ?? ""} ${message}`)) {
-      throw new Error("통합대피소 JSON이 없습니다 — 관리자 페이지에서 먼저 전체 데이터를 저장해 주세요");
-    }
+    if (isMissingSnapshotError(error)) throw new Error(MISSING_SHELTER_SNAPSHOT_MESSAGE);
     throw error;
   }
   memoryCache = { snapshot, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS };
@@ -167,8 +189,7 @@ export async function getShelterSnapshotSummary(): Promise<ShelterSnapshotSummar
     memoryCache = { snapshot, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS };
     return summary(snapshot, "local-file", size, null);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/BlobNotFound|ENOENT|not found/i.test(`${(error as any)?.name ?? ""} ${message}`)) return null;
+    if (isMissingSnapshotError(error)) return null;
     throw error;
   }
 }

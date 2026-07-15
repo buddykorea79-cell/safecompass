@@ -132,6 +132,63 @@ function bodySnippet(text: string): string {
   return normalized ? ` — 응답: ${normalized.slice(0, 160)}` : "";
 }
 
+function normalizeKmaCharset(contentType: string): string | null {
+  const match = contentType.match(/charset\s*=\s*["']?([^;\s"']+)/i);
+  if (!match) return null;
+  const charset = match[1].toLowerCase().replace(/_/g, "-");
+  if (
+    charset === "euc-kr" ||
+    charset === "cp949" ||
+    charset === "ms949" ||
+    charset === "windows-949" ||
+    charset === "ks-c-5601-1987" ||
+    charset === "ksc5601"
+  ) {
+    // WHATWG의 euc-kr 디코더는 기상청이 사용하는 CP949 확장 문자까지 처리한다.
+    return "euc-kr";
+  }
+  if (charset === "utf8") return "utf-8";
+  return charset;
+}
+
+function decodeText(bytes: Uint8Array, charset: string, fatal = false): string {
+  return new TextDecoder(charset, { fatal }).decode(bytes);
+}
+
+/**
+ * KMA typ01 텍스트 API는 자료에 따라 EUC-KR(CP949) 바이트를 반환한다.
+ * Response.text()는 항상 UTF-8로 디코딩하므로 원시 바이트와 응답 charset을 사용한다.
+ * charset이 없을 때는 유효한 UTF-8을 우선하고, 그렇지 않으면 EUC-KR로 폴백한다.
+ */
+export function decodeKmaText(
+  source: ArrayBuffer | ArrayBufferView,
+  contentType = ""
+): string {
+  const bytes = source instanceof ArrayBuffer
+    ? new Uint8Array(source)
+    : new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
+  const declaredCharset = normalizeKmaCharset(contentType);
+
+  if (declaredCharset) {
+    try {
+      return decodeText(bytes, declaredCharset, true);
+    } catch {
+      // 일부 typ01 응답은 charset 표기와 실제 바이트가 다르므로 아래 자동 판별을 계속한다.
+    }
+  }
+
+  try {
+    return decodeText(bytes, "utf-8", true);
+  } catch {
+    return decodeText(bytes, "euc-kr");
+  }
+}
+
+async function readKmaText(response: Response): Promise<string> {
+  const bytes = await response.arrayBuffer();
+  return decodeKmaText(bytes, response.headers.get("content-type") ?? "");
+}
+
 export function parseShortForecastGrid(text: string): number[] {
   const withoutComments = text
     .split(/\r?\n/)
@@ -419,7 +476,7 @@ export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherA
       headers: COMMON_HEADERS,
       signal: AbortSignal.timeout(KMA_ALERT_TIMEOUT_MS),
     });
-    const text = await response.text();
+    const text = await readKmaText(response);
     if (!response.ok) {
       const hint =
         response.status === 401 || response.status === 403
@@ -437,13 +494,14 @@ export async function getWeatherAlerts(regionKeyword?: string): Promise<WeatherA
         const columns = line.split(",").map((column) => column.trim());
         if (columns.length < 8) return null;
         const [, regionUpperName, regionId, regionName, issuedAt, effectiveAt, warning, level] = columns;
-        if (!warning) return null;
+        const normalizedIssuedAt = kmaTimeToIso(issuedAt);
+        if (!warning || !normalizedIssuedAt) return null;
         return {
           id: `${issuedAt || index}-${regionId || index}-${index}`,
           alert_kind: WRN_KIND_MAP[warning] ?? warning,
           alert_level: WRN_LEVEL_MAP[level] ?? "주의보",
           region_codes: [regionName || regionUpperName || ""].filter(Boolean),
-          issued_at: kmaTimeToIso(issuedAt) ?? new Date().toISOString(),
+          issued_at: normalizedIssuedAt,
           effective_until: kmaTimeToIso(effectiveAt),
           source: "kma" as const,
         };

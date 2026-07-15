@@ -28,6 +28,55 @@ export function bizrouterAvailable(): boolean {
 export interface ChatResult {
   text: string;
   fallback: boolean;
+  message?: string;
+}
+
+type UnknownRecord = Record<string, unknown>;
+
+function asRecord(value: unknown): UnknownRecord | null {
+  return value !== null && typeof value === "object" ? (value as UnknownRecord) : null;
+}
+
+function contentText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map(contentText).filter(Boolean).join("\n").trim();
+
+  const record = asRecord(value);
+  if (!record) return "";
+  if (typeof record.text === "string") return record.text.trim();
+  const textRecord = asRecord(record.text);
+  if (textRecord && typeof textRecord.value === "string") return textRecord.value.trim();
+  if (typeof record.value === "string") return record.value.trim();
+  return "";
+}
+
+/** Chat Completions와 Responses 호환 응답에서 사용자에게 보여 줄 텍스트를 추출한다. */
+export function extractBizrouterText(response: unknown): string {
+  const root = asRecord(response);
+  if (!root) return "";
+
+  if (typeof root.output_text === "string" && root.output_text.trim()) return root.output_text.trim();
+
+  const choices = Array.isArray(root.choices) ? root.choices : [];
+  const firstChoice = asRecord(choices[0]);
+  const message = asRecord(firstChoice?.message);
+  const chatText = contentText(message?.content) || contentText(firstChoice?.text);
+  if (chatText) return chatText;
+
+  const output = Array.isArray(root.output) ? root.output : [];
+  return output
+    .map((item) => contentText(asRecord(item)?.content))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function requestFailureMessage(error: unknown): string {
+  const record = asRecord(error);
+  const status = record?.status ?? record?.statusCode;
+  const code = typeof record?.code === "string" ? record.code : "";
+  const suffix = [status ? `HTTP ${status}` : "", code].filter(Boolean).join(" · ");
+  return `BizRouter 호출에 실패했습니다${suffix ? ` (${suffix})` : ""}. 관리자 API 테스트와 모델 권한을 확인해 주세요.`;
 }
 
 export async function chatComplete(
@@ -36,7 +85,7 @@ export async function chatComplete(
   opts?: { jsonMode?: boolean }
 ): Promise<ChatResult> {
   if (!hasBizrouter()) {
-    return { text: "", fallback: true };
+    return { text: "", fallback: true, message: "BIZROUTER_API_KEY가 설정되지 않았습니다." };
   }
   try {
     const completion = await getClient().chat.completions.create({
@@ -48,9 +97,17 @@ export async function chatComplete(
       ...(opts?.jsonMode ? { response_format: { type: "json_object" as const } } : {}),
       temperature: 0.2,
     });
-    return { text: completion.choices[0]?.message?.content ?? "", fallback: false };
-  } catch {
-    return { text: "", fallback: true };
+    const text = extractBizrouterText(completion);
+    if (!text) {
+      return {
+        text: "",
+        fallback: true,
+        message: "BizRouter가 텍스트 없는 응답을 반환했습니다. 모델 ID와 응답 형식을 확인해 주세요.",
+      };
+    }
+    return { text, fallback: false };
+  } catch (error) {
+    return { text: "", fallback: true, message: requestFailureMessage(error) };
   }
 }
 

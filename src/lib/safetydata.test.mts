@@ -35,7 +35,181 @@ afterEach(() => {
     else process.env[name] = value;
   }
   vi.unstubAllGlobals();
+  vi.useRealTimers();
   vi.resetModules();
+});
+
+describe("재난안전데이터공유플랫폼 재난문자", () => {
+  it("10748 공식 필드에서 속보 내용·시각·본문 지역을 채운다", async () => {
+    const { normalizeBreakingMessageRow } = await import("./safetydata");
+    const message = normalizeBreakingMessageRow({
+      MSTN_BRNE_NO: "9876",
+      MSTN_BRNE_CN:
+        "내일까지 많은 비가 예상되어 산사태 위험이 높습니다. 산림 주변 활동을 자제하세요.[괴산군]",
+      MSTN_ID: "3",
+      REG_DT: "2026/07/15 08:21:34.000000000",
+      EMRG_MSTN_LTR_EXGENC_STEP: "안전안내",
+    });
+
+    expect(message).toMatchObject({
+      id: "9876",
+      content:
+        "내일까지 많은 비가 예상되어 산사태 위험이 높습니다. 산림 주변 활동을 자제하세요.[괴산군]",
+      issued_at: "2026-07-15T08:21:34+09:00",
+      region_codes: ["충청북도 괴산군"],
+      service: "10748",
+    });
+  });
+
+  it("10748 발신지역을 우선 사용하고 일반 단어의 부분 문자열은 지역으로 오인하지 않는다", async () => {
+    const { extractBreakingMessageRegions } = await import("./safetydata");
+
+    expect(extractBreakingMessageRegions("경기장에서 안전사고가 발생했습니다.")).toEqual([
+      "지역 미제공 · 본문 참조",
+    ]);
+    expect(
+      extractBreakingMessageRegions("통합 지자체 관할 재난 속보입니다.[전남광주통합특별시]")
+    ).toEqual(["전남광주통합특별시"]);
+    expect(extractBreakingMessageRegions("산사태 위험이 높습니다.[괴산군]")).toEqual([
+      "충청북도 괴산군",
+    ]);
+  });
+
+  it("00247의 모든 페이지를 조회해 첫 페이지에 잘리던 최신 문자를 포함한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00+09:00"));
+    process.env.SAFETYDATA_SERVICE00247_KEY = "emergency-secret";
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/V2/api/DSSP-IF-00247");
+      expect(url.searchParams.get("serviceKey")).toBe("emergency-secret");
+      expect(url.searchParams.get("crtDt")).toBe("20260714");
+      expect(url.searchParams.has("regDt")).toBe(false);
+      expect(url.searchParams.get("numOfRows")).toBe("100");
+      const pageNo = Number(url.searchParams.get("pageNo"));
+      const body =
+        pageNo === 1
+          ? [
+              {
+                SN: "oldest-in-range",
+                CRT_DT: "2026/07/14 00:10:00",
+                MSG_CN: "전일 문자",
+                RCPTN_RGN_NM: "서울특별시",
+                EMRG_STEP_NM: "안전안내",
+              },
+            ]
+          : pageNo === 22
+            ? [
+                {
+                  SN: "newest",
+                  CRT_DT: "2026/07/15 11:50:00",
+                  MSG_CN: "최신 긴급재난문자",
+                  RCPTN_RGN_NM: "서울특별시, 경기도",
+                  EMRG_STEP_NM: "긴급재난",
+                },
+              ]
+            : [];
+      return new Response(JSON.stringify({ header: { resultCode: "00" }, totalCount: 2101, body }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getEmergencyMessages } = await import("./safetydata");
+    const result = await getEmergencyMessages();
+
+    expect(fetchMock).toHaveBeenCalledTimes(22);
+    expect(result.fallback).toBe(false);
+    expect(result.messages.map((message) => message.id)).toEqual(["newest", "oldest-in-range"]);
+    expect(result.messages[0].region_codes).toEqual(["서울특별시", "경기도"]);
+  });
+
+  it("10748에 공식 regDt를 보내 마지막 페이지를 조회하고 당일·전일 외 자료는 제거한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00+09:00"));
+    process.env.SAFETYDATA_SERVICE10748_KEY = "breaking-secret";
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe("/V2/api/DSSP-IF-10748");
+      expect(url.searchParams.get("regDt")).toBe("20260714");
+      expect(url.searchParams.has("crtDt")).toBe(false);
+      const pageNo = Number(url.searchParams.get("pageNo"));
+      const body =
+        pageNo === 1
+          ? [
+              {
+                MSTN_BRNE_NO: "expired",
+                MSTN_BRNE_CN: "오래된 속보[국민안전처]",
+                REG_DT: "2026/07/13 23:59:59.000000000",
+              },
+            ]
+          : [
+              {
+                MSTN_BRNE_NO: "latest-breaking",
+                MSTN_BRNE_CN: "호우로 하천 수위가 높습니다. 접근하지 마세요.[괴산군]",
+                REG_DT: "2026/07/15 11:55:00.000000000",
+              },
+            ];
+      return new Response(JSON.stringify({ header: { resultCode: "00" }, totalCount: 101, body }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getBreakingMessages } = await import("./safetydata");
+    const result = await getBreakingMessages();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        id: "latest-breaking",
+        content: "호우로 하천 수위가 높습니다. 접근하지 마세요.[괴산군]",
+        region_codes: ["충청북도 괴산군"],
+      }),
+    ]);
+  });
+
+  it("재난문자 두 서비스 중 하나만 실패해도 부분 장애를 표시한다", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-15T12:00:00+09:00"));
+    process.env.SAFETYDATA_SERVICE00247_KEY = "emergency-secret";
+    delete process.env.SAFETYDATA_SERVICE10748_KEY;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            header: { resultCode: "00" },
+            totalCount: 1,
+            body: [
+              {
+                SN: "available",
+                CRT_DT: "2026/07/15 11:50:00",
+                MSG_CN: "정상 수신된 긴급재난문자",
+                RCPTN_RGN_NM: "서울특별시",
+              },
+            ],
+          })
+        )
+      )
+    );
+
+    const { getDisasterMessages } = await import("./safetydata");
+    const result = await getDisasterMessages();
+
+    expect(result.messages).toHaveLength(1);
+    expect(result.fallback).toBe(true);
+    expect(result.message).toContain("SAFETYDATA_SERVICE10748_KEY");
+  });
+
+  it("관리자 상태는 재난문자 키가 빠지면 통합대피소 키가 있어도 미설정으로 표시한다", async () => {
+    process.env.SAFETYDATA_SERVICE10941_KEY = "shelter-secret";
+    delete process.env.SAFETYDATA_SERVICE00247_KEY;
+    delete process.env.SAFETYDATA_SERVICE10748_KEY;
+
+    const { providerStatuses } = await import("./env");
+    const status = providerStatuses().find((item) => item.provider === "safetydata");
+
+    expect(status?.configured).toBe(false);
+    expect(status?.detail).toContain("SAFETYDATA_SERVICE00247_KEY");
+    expect(status?.detail).toContain("SAFETYDATA_SERVICE10748_KEY");
+  });
 });
 
 describe("재난안전데이터공유플랫폼 통합대피소", () => {

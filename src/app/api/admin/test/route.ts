@@ -51,7 +51,12 @@ export async function POST(req: NextRequest) {
       case "kakao-geocode":
         return NextResponse.json(await coordToRegionLabel(lat, lng));
       case "bizrouter-chat":
-        return NextResponse.json(await chatComplete("당신은 테스트용 어시스턴트입니다.", params.message ?? "안녕하세요"));
+        return NextResponse.json(
+          await chatComplete(
+            "당신은 테스트용 어시스턴트입니다.",
+            params.message?.trim() || "안녕하세요"
+          )
+        );
       default:
         return NextResponse.json({ error: "알 수 없는 provider입니다" }, { status: 400 });
     }

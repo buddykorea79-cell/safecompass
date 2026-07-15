@@ -17,6 +17,11 @@ function cleanKey(raw: string | undefined): string {
   return key;
 }
 
+function bizrouterModel(raw: string | undefined, fallback: string): string {
+  const model = (raw || fallback).trim();
+  return model.includes("/") ? model : `openai/${model}`;
+}
+
 // 재난안전데이터공유플랫폼은 활용 신청한 서비스별 키를 서로 교차 사용하지 않는다.
 // - SAFETYDATA_SERVICE10748_KEY: DSSP-IF-10748 재난문자(속보)
 // - SAFETYDATA_SERVICE00247_KEY: DSSP-IF-00247 긴급재난문자
@@ -30,10 +35,15 @@ export const env = {
   blobReadWriteToken: cleanKey(process.env.BLOB_READ_WRITE_TOKEN),
   kakaoRestApiKey: cleanKey(process.env.KAKAO_REST_API_KEY),
   kakaoJsKey: (process.env.NEXT_PUBLIC_KAKAO_JS_KEY ?? "").trim(),
-  bizrouterBaseUrl: (process.env.BIZROUTER_BASE_URL ?? "").trim(),
+  bizrouterBaseUrl: (process.env.BIZROUTER_BASE_URL || "https://api.bizrouter.ai/v1")
+    .trim()
+    .replace(/\/+$/, ""),
   bizrouterApiKey: (process.env.BIZROUTER_API_KEY ?? "").trim(),
-  bizrouterChatModel: process.env.BIZROUTER_CHAT_MODEL || "gpt-4o-mini",
-  bizrouterEmbeddingModel: process.env.BIZROUTER_EMBEDDING_MODEL || "text-embedding-3-small",
+  bizrouterChatModel: bizrouterModel(process.env.BIZROUTER_CHAT_MODEL, "openai/gpt-4o-mini"),
+  bizrouterEmbeddingModel: bizrouterModel(
+    process.env.BIZROUTER_EMBEDDING_MODEL,
+    "openai/text-embedding-3-small"
+  ),
 };
 
 export const hasKmaApiHub = () => Boolean(env.kmaApiHubAuthKey);
@@ -45,7 +55,7 @@ export const hasShelterSnapshotStorage = () =>
   Boolean(env.blobReadWriteToken) || process.env.NODE_ENV !== "production";
 export const hasKakaoRest = () => Boolean(env.kakaoRestApiKey);
 export const hasKakaoJs = () => Boolean(env.kakaoJsKey);
-export const hasBizrouter = () => Boolean(env.bizrouterBaseUrl && env.bizrouterApiKey);
+export const hasBizrouter = () => Boolean(env.bizrouterApiKey);
 
 export interface ProviderStatus {
   provider: "kma" | "safetydata" | "kakao" | "bizrouter";
@@ -75,7 +85,7 @@ export function providerStatuses(): ProviderStatus[] {
     {
       provider: "safetydata",
       label: "재난안전데이터공유플랫폼",
-      configured: hasSafetydata10941() && hasShelterSnapshotStorage(),
+      configured: safetydataMissing.length === 0,
       detail:
         safetydataMissing.length === 0
           ? "재난문자 2종·통합대피소 전용 키·JSON 저장소 모두 설정됨"
@@ -97,8 +107,8 @@ export function providerStatuses(): ProviderStatus[] {
       label: "bizrouter (LLM)",
       configured: hasBizrouter(),
       detail: hasBizrouter()
-        ? "BIZROUTER_BASE_URL / BIZROUTER_API_KEY 설정됨"
-        : "미설정 — 규칙기반/키워드 검색으로 자동 대체됩니다",
+        ? `BIZROUTER_API_KEY 설정됨 · ${env.bizrouterBaseUrl}`
+        : "BIZROUTER_API_KEY 미설정 — 규칙기반/키워드 검색으로 자동 대체됩니다",
     },
   ];
 }

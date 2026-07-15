@@ -7,6 +7,7 @@ export type KakaoMapSdkErrorCode =
   | "MAP_CORE_REQUEST_FAILED"
   | "MAP_CORE_TIMEOUT"
   | "MAP_CORE_INVALID"
+  | "MAP_TILES_TIMEOUT"
   | "MAP_CREATE_FAILED";
 
 export class KakaoMapSdkError extends Error {
@@ -28,6 +29,10 @@ export interface KakaoMapErrorView {
 type KakaoMapsApi = {
   Map?: unknown;
   load?: (callback: () => void) => void;
+  event?: {
+    addListener: (target: unknown, type: string, handler: () => void) => void;
+    removeListener: (target: unknown, type: string, handler: () => void) => void;
+  };
 };
 
 type KakaoSdkWindow = Window & {
@@ -126,6 +131,16 @@ export function kakaoMapErrorView(
           "일시적인 네트워크 문제라면 잠시 후 다시 시도해 주세요.",
         ],
       };
+    case "MAP_TILES_TIMEOUT":
+      return {
+        code: error.code,
+        summary: "카카오맵 객체는 생성됐지만 지도 타일 이미지를 받지 못했습니다.",
+        checks: [
+          "개발자 도구에서 mts.daumcdn.net 타일 PNG 요청이 차단 또는 실패했는지 확인해 주세요.",
+          "광고 차단기·브라우저 추적 방지·방화벽에서 daumcdn.net과 kakaocdn.net을 허용해 주세요.",
+          "콘텐츠 보안 정책(CSP)을 사용한다면 카카오 지도 이미지 CDN을 img-src에 허용해 주세요.",
+        ],
+      };
     case "MAP_CREATE_FAILED":
       return {
         code: error.code,
@@ -180,6 +195,13 @@ function sdkKeyMatches(script: HTMLScriptElement, key: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function kakaoMapSdkUrl(key: string): string {
+  const url = new URL(`https://${SDK_HOST}${SDK_PATH}`);
+  url.searchParams.set("appkey", key);
+  url.searchParams.set("autoload", "false");
+  return url.toString();
 }
 
 /**
@@ -382,9 +404,7 @@ export function loadKakaoMapSdk(rawKey: string, timeoutMs = DEFAULT_TIMEOUT_MS):
 
     sdkScript = document.createElement("script");
     sdkScript.id = SDK_SCRIPT_ID;
-    sdkScript.src = `https://${SDK_HOST}${SDK_PATH}?appkey=${encodeURIComponent(
-      key
-    )}&autoload=false`;
+    sdkScript.src = kakaoMapSdkUrl(key);
     sdkScript.async = true;
     sdkScript.dataset.safecompassLoadState = "loading";
     sdkScript.addEventListener("load", handleSdkLoad, { once: true });
@@ -401,4 +421,78 @@ export function loadKakaoMapSdk(rawKey: string, timeoutMs = DEFAULT_TIMEOUT_MS):
 
 export function kakaoMapCreateError(): KakaoMapSdkError {
   return new KakaoMapSdkError("MAP_CREATE_FAILED", "카카오맵 화면을 만들지 못했습니다.");
+}
+
+/**
+ * 지도 객체 생성과 실제 타일 표시 성공을 구분한다.
+ * 카카오가 공식 제공하는 `tilesloaded` 이벤트는 현재 화면의 타일 이미지가 모두
+ * 로드된 뒤 발생하므로, SDK 성공 뒤 빈 지도만 남는 CDN 차단도 진단할 수 있다.
+ */
+export function waitForInitialKakaoMapTiles(
+  map: unknown,
+  timeoutMs = 15_000,
+  signal?: AbortSignal
+): Promise<void> {
+  if (typeof window === "undefined") {
+    return Promise.reject(
+      new KakaoMapSdkError("MAP_CORE_INVALID", "브라우저에서만 지도 타일을 확인할 수 있습니다.")
+    );
+  }
+
+  const eventApi = (window as KakaoSdkWindow).kakao?.maps?.event;
+  if (!eventApi) {
+    return Promise.reject(
+      new KakaoMapSdkError("MAP_CORE_INVALID", "카카오맵 이벤트 API를 찾지 못했습니다.")
+    );
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let timeoutId: number | undefined;
+
+    const cleanup = () => {
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      signal?.removeEventListener("abort", handleAbort);
+      try {
+        eventApi.removeListener(map, "tilesloaded", handleTilesLoaded);
+      } catch {
+        // 이미 해제된 카카오맵 객체는 별도 정리가 필요하지 않다.
+      }
+    };
+    const finish = (error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (error) reject(error);
+      else resolve();
+    };
+    function handleTilesLoaded() {
+      finish();
+    }
+    function handleAbort() {
+      finish(signal?.reason ?? new DOMException("지도 타일 확인이 취소되었습니다.", "AbortError"));
+    }
+
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+
+    try {
+      eventApi.addListener(map, "tilesloaded", handleTilesLoaded);
+    } catch {
+      finish(new KakaoMapSdkError("MAP_CORE_INVALID", "카카오맵 타일 이벤트를 등록하지 못했습니다."));
+      return;
+    }
+    if (settled) return;
+    signal?.addEventListener("abort", handleAbort, { once: true });
+    timeoutId = window.setTimeout(() => {
+      finish(
+        new KakaoMapSdkError(
+          "MAP_TILES_TIMEOUT",
+          "카카오맵 타일 이미지 로딩 시간이 초과되었습니다."
+        )
+      );
+    }, timeoutMs);
+  });
 }

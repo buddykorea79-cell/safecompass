@@ -6,7 +6,8 @@
 // 응답은 V2 공통 포맷 { header: { resultCode, resultMsg, errorMsg }, body: [...] }을 따른다.
 
 import { env, hasSafetydata00247, hasSafetydata10748, hasSafetydata10941 } from "./env";
-import { regionKeywordMatch } from "./regions";
+import { REGIONS, regionKeywordMatch } from "./regions";
+import { retainCurrentOfficialAlerts } from "./officialAlertRetention";
 import type { DisasterMessage, Shelter, ShelterType, ShelterTypeCode } from "@/types";
 
 const BASE_URL = "https://www.safetydata.go.kr/V2/api";
@@ -21,8 +22,14 @@ export const SHELTER_SERVICE_ID = "DSSP-IF-10941";
 const SHELTER_PAGE_SIZE = 1_000;
 const SHELTER_MAX_PAGES_PER_TYPE = 100;
 
-// 재난문자 조회 시작일: 최근 N일치만 요청 (crtDt 미지정 시 과거 데이터부터 내려와 최신 문자가 잘림)
-const MESSAGE_LOOKBACK_DAYS = 3;
+// 공식 알림 보관 정책은 KST 당일+전일이다. 시작일을 지정하지 않으면 공급자가
+// 오래된 자료부터 내려주므로 첫 페이지에 최신 문자가 포함되지 않는다.
+const MESSAGE_LOOKBACK_DAYS = 1;
+const MESSAGE_PAGE_SIZE = 100;
+const MESSAGE_PAGE_CONCURRENCY = 4;
+// totalCount가 없는 비정상 응답에서 무한 조회를 막는다. 이 한도에 닿으면 일부만
+// 반환하지 않고 명시적으로 실패시켜 운영 화면에서 공급자 장애를 확인할 수 있게 한다.
+const MESSAGE_UNKNOWN_TOTAL_PAGE_LIMIT = 1_000;
 
 function kstDateStr(daysAgo = 0): string {
   const now = new Date();
@@ -32,13 +39,28 @@ function kstDateStr(daysAgo = 0): string {
   return `${kst.getFullYear()}${pad(kst.getMonth() + 1)}${pad(kst.getDate())}`;
 }
 
-// 포털의 "2024/07/14 08:30:00" 형태를 KST 기준 ISO 문자열로 정규화 (서버가 UTC여도 시각이 밀리지 않게)
-function normalizeIssuedAt(raw: string | undefined): string {
-  if (!raw) return new Date().toISOString();
-  const m = String(raw).match(/^(\d{4})[/-](\d{2})[/-](\d{2})[ T]?(\d{2})?:?(\d{2})?:?(\d{2})?/);
-  if (!m) return String(raw);
-  const [, y, mo, d, h = "00", mi = "00", s = "00"] = m;
-  return `${y}-${mo}-${d}T${h}:${mi}:${s}+09:00`;
+// 포털의 "2024/07/14 08:30:00.000000000" 또는 YYYYMMDDHHmmss 형태를
+// KST 기준 ISO 문자열로 정규화한다. 날짜가 없는 행을 현재 시각으로 위장하지 않는다.
+function normalizeIssuedAt(raw: unknown): string | null {
+  const value = String(raw ?? "").trim();
+  if (!value) return null;
+
+  const separated = value.match(
+    /^(\d{4})[/-](\d{2})[/-](\d{2})(?:[ T](\d{2})(?::?(\d{2}))?(?::?(\d{2}))?)?/
+  );
+  if (separated) {
+    const [, y, mo, d, h = "00", mi = "00", s = "00"] = separated;
+    return `${y}-${mo}-${d}T${h}:${mi}:${s}+09:00`;
+  }
+
+  const compact = value.match(/^(\d{4})(\d{2})(\d{2})(?:(\d{2})(\d{2})?(\d{2})?)?$/);
+  if (compact) {
+    const [, y, mo, d, h = "00", mi = "00", s = "00"] = compact;
+    return `${y}-${mo}-${d}T${h}:${mi}:${s}+09:00`;
+  }
+
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 interface SafetydataPage<T> {
@@ -76,7 +98,12 @@ function parseSafetydataBody<T>(json: any, serviceId: string): SafetydataPage<T>
   else if (body?.items?.item && typeof body.items.item === "object") items = [body.items.item];
   else if (body?.item && typeof body.item === "object") items = [body.item];
   else if (body?.items?.item == null && totalCount === 0) items = [];
-  else if (body && typeof body === "object" && (body.MNG_SN || body.SN || body.MSG_CN)) items = [body];
+  else if (
+    body &&
+    typeof body === "object" &&
+    (body.MNG_SN || body.SN || body.MSG_CN || body.MSTN_BRNE_NO || body.MSTN_BRNE_CN)
+  )
+    items = [body];
   else {
     throw new Error(`재난안전데이터공유플랫폼 응답 형식 오류 (${serviceId}): body를 해석할 수 없습니다`);
   }
@@ -132,6 +159,55 @@ async function callSafetydata<T = any>(
   return parseSafetydataBody<T>(json, serviceId);
 }
 
+async function fetchMessageRows(
+  serviceId: typeof EMERGENCY_MSG_SERVICE_ID | typeof BREAKING_MSG_SERVICE_ID,
+  serviceKey: string,
+  dateParameter: "crtDt" | "regDt"
+): Promise<any[]> {
+  const baseParams = {
+    [dateParameter]: kstDateStr(MESSAGE_LOOKBACK_DAYS),
+    numOfRows: String(MESSAGE_PAGE_SIZE),
+  };
+  const first = await callSafetydata(serviceId, serviceKey, { ...baseParams, pageNo: "1" });
+
+  if (first.totalCount === null) {
+    const rows = [...first.rows];
+    let previous = first;
+    for (let pageNo = 2; previous.rows.length >= MESSAGE_PAGE_SIZE; pageNo += 1) {
+      if (pageNo > MESSAGE_UNKNOWN_TOTAL_PAGE_LIMIT) {
+        throw new Error(
+          `${serviceId} 응답에 totalCount가 없어 ${MESSAGE_UNKNOWN_TOTAL_PAGE_LIMIT}페이지에서 조회를 중단했습니다`
+        );
+      }
+      previous = await callSafetydata(serviceId, serviceKey, {
+        ...baseParams,
+        pageNo: String(pageNo),
+      });
+      rows.push(...previous.rows);
+    }
+    return rows;
+  }
+
+  const totalPages = Math.max(1, Math.ceil(first.totalCount / MESSAGE_PAGE_SIZE));
+  if (totalPages === 1) return first.rows;
+
+  // 날짜 조건으로 KST 전일부터 범위를 제한한 뒤 그 범위의 모든 페이지를 조회한다.
+  // 일부 페이지만 반환하면 전국 발송량이 많은 날 특정 지역 알림이 누락될 수 있다.
+  const rows = [...first.rows];
+  const pageNumbers = Array.from({ length: totalPages - 1 }, (_, index) => index + 2);
+
+  for (let index = 0; index < pageNumbers.length; index += MESSAGE_PAGE_CONCURRENCY) {
+    const batch = pageNumbers.slice(index, index + MESSAGE_PAGE_CONCURRENCY);
+    const pages = await Promise.all(
+      batch.map((pageNo) =>
+        callSafetydata(serviceId, serviceKey, { ...baseParams, pageNo: String(pageNo) })
+      )
+    );
+    for (const page of pages) rows.push(...page.rows);
+  }
+  return rows;
+}
+
 // 긴급단계명(EMRG_STEP_NM: 위급/긴급/안전안내)을 우선 사용하고, 없으면 본문에서 추정
 function classifyMsgType(stepName: string | undefined, fallbackText?: string): DisasterMessage["msg_type"] {
   const raw = stepName || fallbackText;
@@ -140,6 +216,164 @@ function classifyMsgType(stepName: string | undefined, fallbackText?: string): D
   if (raw.includes("긴급")) return "긴급재난문자";
   if (raw.includes("안전안내")) return "안전안내문자";
   return "긴급재난문자";
+}
+
+function normalizeRegionValues(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : [raw];
+  return Array.from(
+    new Set(
+      values
+        .flatMap((value) => String(value ?? "").split(/[,;|]/))
+        .map((value) => value.trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+const SIDO_ALIASES: Record<string, string[]> = {
+  서울특별시: ["서울특별시", "서울시"],
+  부산광역시: ["부산광역시", "부산시"],
+  대구광역시: ["대구광역시", "대구시"],
+  인천광역시: ["인천광역시", "인천시"],
+  광주광역시: ["광주광역시"],
+  대전광역시: ["대전광역시", "대전시"],
+  울산광역시: ["울산광역시", "울산시"],
+  세종특별자치시: ["세종특별자치시", "세종시"],
+  경기도: ["경기도"],
+  강원특별자치도: ["강원특별자치도", "강원도"],
+  충청북도: ["충청북도", "충북"],
+  충청남도: ["충청남도", "충남"],
+  전북특별자치도: ["전북특별자치도", "전라북도", "전북"],
+  전라남도: ["전라남도", "전남"],
+  경상북도: ["경상북도", "경북"],
+  경상남도: ["경상남도", "경남"],
+  제주특별자치도: ["제주특별자치도", "제주도"],
+};
+
+function compactRegionText(value: string): string {
+  return value.normalize("NFC").replace(/\s+/g, "");
+}
+
+/** DSSP-IF-10748에는 별도 수신지역 필드가 없어 공식 본문에서 지역을 보완 추출한다. */
+export function extractBreakingMessageRegions(content: string): string[] {
+  const compact = compactRegionText(content);
+  if (!compact) return [];
+  if (compact.includes("전국") || compact.includes("대한민국전역")) return ["전국"];
+
+  // 속보 본문 끝의 대괄호 발신지역을 가장 신뢰한다. 알려진 시군구는 앱의 정식
+  // 시도명을 붙이고, 통합 지자체처럼 아직 시드에 없는 명칭은 원문 그대로 보존한다.
+  const bracketedRegions = Array.from(content.matchAll(/\[([^\]]+)]/g))
+    .map((match) => match[1].trim())
+    .filter(
+      (value) =>
+        /(?:특별시|특별자치시|특별자치도|광역시|[시군구도])$/.test(value) &&
+        !/(국민안전처|행정안전부|기상청|소방청|경찰청)$/.test(value)
+    );
+  if (bracketedRegions.length > 0) {
+    const resolved = bracketedRegions.flatMap((value) => {
+      const token = compactRegionText(value);
+      const regionMatches = REGIONS.filter(
+        (region) =>
+          compactRegionText(region.label) === token ||
+          (region.sigungu && compactRegionText(region.sigungu) === token) ||
+          (region.eupmyeondong && compactRegionText(region.eupmyeondong) === token)
+      );
+      if (regionMatches.length === 1) return [regionMatches[0].label];
+
+      const sido = Object.entries(SIDO_ALIASES).find(([, aliases]) =>
+        aliases.some((alias) => compactRegionText(alias) === token)
+      )?.[0];
+      return [sido ?? value];
+    });
+    return Array.from(new Set(resolved));
+  }
+
+  const matchedSidos = new Set(
+    Object.entries(SIDO_ALIASES)
+      .filter(([, aliases]) => aliases.some((alias) => compact.includes(compactRegionText(alias))))
+      .map(([sido]) => sido)
+  );
+  const sigunguSidoCount = new Map<string, number>();
+  for (const region of REGIONS) {
+    if (!region.sigungu) continue;
+    sigunguSidoCount.set(region.sigungu, (sigunguSidoCount.get(region.sigungu) ?? 0) + 1);
+  }
+
+  const found = new Set<string>();
+  const matchedChildSidos = new Set<string>();
+  for (const region of REGIONS) {
+    if (region.eupmyeondong && compact.includes(compactRegionText(region.eupmyeondong))) {
+      found.add(region.label);
+      matchedChildSidos.add(region.sido);
+      continue;
+    }
+    if (!region.sigungu) continue;
+
+    const fullName = compactRegionText(region.sigungu);
+    const stem = fullName.replace(/[시군구]$/, "");
+    const duplicated = (sigunguSidoCount.get(region.sigungu) ?? 0) > 1;
+    const hasSidoContext = matchedSidos.has(region.sido);
+    const exactMatch = compact.includes(fullName);
+    const contextualStemMatch = hasSidoContext && stem.length >= 2 && compact.includes(stem);
+    if ((!exactMatch && !contextualStemMatch) || (duplicated && !hasSidoContext)) continue;
+
+    found.add(`${region.sido} ${region.sigungu}`);
+    matchedChildSidos.add(region.sido);
+  }
+
+  for (const sido of matchedSidos) {
+    if (!matchedChildSidos.has(sido)) found.add(sido);
+  }
+  if (found.size > 0) return Array.from(found);
+
+  const maritimeRegion = content.match(
+    /((?:동해|서해|남해|제주)[가-힣]*(?:앞바다|먼바다|전해상|해상))/
+  )?.[1];
+  return maritimeRegion ? [maritimeRegion] : ["지역 미제공 · 본문 참조"];
+}
+
+export function normalizeEmergencyMessageRow(row: any, index = 0): DisasterMessage | null {
+  const content = String(row?.MSG_CN ?? row?.msgCn ?? "").trim();
+  const issuedAt = normalizeIssuedAt(row?.CRT_DT ?? row?.crtDt ?? row?.REG_YMD ?? row?.regYmd);
+  if (!content || !issuedAt) return null;
+  return {
+    id: String(row?.SN ?? row?.sn ?? row?.MD101_SN ?? row?.md101Sn ?? `${issuedAt}-${index}`),
+    msg_type: classifyMsgType(
+      row?.EMRG_STEP_NM ?? row?.emrgStepNm,
+      row?.DST_SE_NM ?? row?.dstSeNm ?? content
+    ),
+    region_codes: normalizeRegionValues(
+      row?.RCPTN_RGN_NM ?? row?.rcptnRgnNm ?? row?.RGN_NM ?? row?.rgnNm ?? row?.REG_ID ?? row?.regId
+    ),
+    content,
+    issued_at: issuedAt,
+    source: "safetydata",
+    service: "00247",
+  };
+}
+
+export function normalizeBreakingMessageRow(row: any, index = 0): DisasterMessage | null {
+  const content = String(row?.MSTN_BRNE_CN ?? row?.mstnBrneCn ?? "").trim();
+  const issuedAt = normalizeIssuedAt(row?.REG_DT ?? row?.regDt);
+  if (!content || !issuedAt) return null;
+  const suppliedRegions = normalizeRegionValues(
+    row?.RCPTN_RGN_NM ?? row?.rcptnRgnNm ?? row?.RGN_NM ?? row?.rgnNm
+  );
+  return {
+    id: String(
+      row?.MSTN_BRNE_NO ??
+        row?.mstnBrneNo ??
+        row?.MSTN_ID ??
+        row?.mstnId ??
+        `${issuedAt}-${index}`
+    ),
+    msg_type: "재난문자(속보)",
+    region_codes: suppliedRegions.length > 0 ? suppliedRegions : extractBreakingMessageRegions(content),
+    content,
+    issued_at: issuedAt,
+    source: "safetydata",
+    service: "10748",
+  };
 }
 
 export interface DisasterMessageResult {
@@ -177,19 +411,18 @@ export async function getEmergencyMessages(regionKeyword?: string): Promise<Disa
     };
   }
   try {
-    const { rows } = await callSafetydata(EMERGENCY_MSG_SERVICE_ID, env.safetydataService00247Key, {
-      crtDt: kstDateStr(MESSAGE_LOOKBACK_DAYS),
-    });
-    const messages: DisasterMessage[] = rows.map((row: any, idx: number) => ({
-      id: String(row.SN ?? row.MD101_SN ?? row.id ?? idx),
-      msg_type: classifyMsgType(row.EMRG_STEP_NM ?? row.emrgStepNm, row.DST_SE_NM ?? row.MSG_CN),
-      region_codes: [String(row.RCPTN_RGN_NM ?? row.rcptnRgnNm ?? row.REG_ID ?? "")].filter(Boolean),
-      content: String(row.MSG_CN ?? row.msgCn ?? ""),
-      issued_at: normalizeIssuedAt(row.CRT_DT ?? row.crtDt ?? row.REG_YMD ?? row.regYmd),
-      source: "safetydata" as const,
-      service: "00247" as const,
-    }));
-    return { messages: sortAndDedupe(filterByRegion(messages, regionKeyword)), fallback: false };
+    const rows = await fetchMessageRows(
+      EMERGENCY_MSG_SERVICE_ID,
+      env.safetydataService00247Key,
+      "crtDt"
+    );
+    const messages = rows
+      .map((row: any, index: number) => normalizeEmergencyMessageRow(row, index))
+      .filter((message): message is DisasterMessage => message !== null);
+    return {
+      messages: sortAndDedupe(filterByRegion(retainCurrentOfficialAlerts(messages), regionKeyword)),
+      fallback: false,
+    };
   } catch (err) {
     return {
       messages: [],
@@ -209,19 +442,18 @@ export async function getBreakingMessages(regionKeyword?: string): Promise<Disas
     };
   }
   try {
-    const { rows } = await callSafetydata(BREAKING_MSG_SERVICE_ID, env.safetydataService10748Key, {
-      crtDt: kstDateStr(MESSAGE_LOOKBACK_DAYS),
-    });
-    const messages: DisasterMessage[] = rows.map((row: any, idx: number) => ({
-      id: String(row.SN ?? row.MD101_SN ?? row.id ?? idx),
-      msg_type: "재난문자(속보)" as const,
-      region_codes: [String(row.RCPTN_RGN_NM ?? row.rcptnRgnNm ?? row.RGN_NM ?? row.REG_ID ?? "")].filter(Boolean),
-      content: String(row.MSG_CN ?? row.msgCn ?? row.CN ?? row.TTL ?? ""),
-      issued_at: normalizeIssuedAt(row.CRT_DT ?? row.crtDt ?? row.REG_YMD ?? row.regYmd),
-      source: "safetydata" as const,
-      service: "10748" as const,
-    }));
-    return { messages: sortAndDedupe(filterByRegion(messages, regionKeyword)), fallback: false };
+    const rows = await fetchMessageRows(
+      BREAKING_MSG_SERVICE_ID,
+      env.safetydataService10748Key,
+      "regDt"
+    );
+    const messages = rows
+      .map((row: any, index: number) => normalizeBreakingMessageRow(row, index))
+      .filter((message): message is DisasterMessage => message !== null);
+    return {
+      messages: sortAndDedupe(filterByRegion(retainCurrentOfficialAlerts(messages), regionKeyword)),
+      fallback: false,
+    };
   } catch (err) {
     return {
       messages: [],
@@ -238,7 +470,7 @@ export async function getDisasterMessages(regionKeyword?: string): Promise<Disas
     getBreakingMessages(regionKeyword),
   ]);
   const messages = sortAndDedupe([...emergency.messages, ...breaking.messages]);
-  const bothFailed = emergency.fallback && breaking.fallback;
+  const anyFailed = emergency.fallback || breaking.fallback;
   const partialError = [
     emergency.fallback ? `긴급재난문자: ${emergency.message}` : "",
     breaking.fallback ? `재난문자(속보): ${breaking.message}` : "",
@@ -247,7 +479,7 @@ export async function getDisasterMessages(regionKeyword?: string): Promise<Disas
     .join(" / ");
   return {
     messages,
-    fallback: bothFailed,
+    fallback: anyFailed,
     message: partialError || undefined,
   };
 }

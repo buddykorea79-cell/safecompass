@@ -6,6 +6,13 @@ const GRID_NX = 149;
 const GRID_NY = 253;
 const GRID_SIZE = GRID_NX * GRID_NY;
 const SEOUL_INDEX = (127 - 1) * GRID_NX + (60 - 1);
+const CP949_WARNING = Uint8Array.from([
+  0x30, 0x2c, 0xbc, 0xad, 0xbf, 0xef, 0xc6, 0xaf, 0xba, 0xb0, 0xbd, 0xc3, 0x2c,
+  0x4c, 0x31, 0x30, 0x31, 0x30, 0x31, 0x30, 0x30, 0x2c, 0xbc, 0xad, 0xbf, 0xef,
+  0x2c, 0x32, 0x30, 0x32, 0x36, 0x30, 0x37, 0x31, 0x35, 0x31, 0x32, 0x30, 0x30,
+  0x2c, 0x32, 0x30, 0x32, 0x36, 0x30, 0x37, 0x31, 0x35, 0x31, 0x33, 0x30, 0x30,
+  0x2c, 0x52, 0x2c, 0x32, 0x0a,
+]);
 
 function restore(name: "KMA_AUTH_KEY" | "KMA_SERVICE_KEY", value: string | undefined) {
   if (value === undefined) delete process.env[name];
@@ -154,5 +161,58 @@ describe("KMA API허브 단기예보 격자자료", () => {
     expect(result.fallback).toBe(true);
     expect(result.message).not.toContain(secret);
     expect(result.message).not.toMatch(/[?&]authKey=[^\s]+/);
+  });
+});
+
+describe("KMA API허브 기상특보 인코딩", () => {
+  it("CP949 바이트를 응답 charset 또는 바이트 자동 판별로 한글 디코딩한다", async () => {
+    const { decodeKmaText } = await import("./kma");
+
+    expect(decodeKmaText(CP949_WARNING, "text/plain; charset=EUC-KR")).toContain(
+      "서울특별시"
+    );
+    expect(decodeKmaText(CP949_WARNING)).toContain("서울특별시");
+  });
+
+  it("기상특보 API의 CP949 지역명을 깨뜨리지 않고 정규화한다", async () => {
+    process.env.KMA_AUTH_KEY = "api-hub-secret";
+    const fetchMock = vi.fn(async () =>
+      new Response(CP949_WARNING, {
+        status: 200,
+        headers: { "Content-Type": "text/plain; charset=EUC-KR" },
+      })
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getWeatherAlerts } = await import("./kma");
+    const result = await getWeatherAlerts("서울");
+
+    expect(result.fallback).toBe(false);
+    expect(result.alerts).toHaveLength(1);
+    expect(result.alerts[0]).toMatchObject({
+      alert_kind: "호우",
+      alert_level: "주의보",
+      region_codes: ["서울"],
+      issued_at: "2026-07-15T12:00:00+09:00",
+    });
+  });
+
+  it("발표시각이 없거나 깨진 특보 행은 현재 시각으로 위장하지 않고 제외한다", async () => {
+    process.env.KMA_AUTH_KEY = "api-hub-secret";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        new Response("0,서울특별시,L1010100,서울,깨진시각,202607151300,R,2\n", {
+          status: 200,
+          headers: { "Content-Type": "text/plain; charset=UTF-8" },
+        })
+      )
+    );
+
+    const { getWeatherAlerts } = await import("./kma");
+    const result = await getWeatherAlerts();
+
+    expect(result.fallback).toBe(false);
+    expect(result.alerts).toEqual([]);
   });
 });

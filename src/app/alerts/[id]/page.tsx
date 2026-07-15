@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, AlertTriangle, CloudLightning, Sparkles } from "lucide-react";
 import { ALERTS_CACHE_KEY } from "@/lib/alertsCache";
+import { retainCurrentOfficialAlerts } from "@/lib/officialAlertRetention";
 import type { UnifiedAlert } from "@/components/AlertListItem";
 
 function formatTime(iso: string): string {
@@ -31,7 +32,18 @@ export default function AlertDetailPage() {
     if (cached) {
       try {
         const list: UnifiedAlert[] = JSON.parse(cached);
-        const found = list.find((a) => `${a.kind}-${a.id}` === id);
+        if (!Array.isArray(list)) throw new Error("공식 알림 캐시 형식 오류");
+        const retained = retainCurrentOfficialAlerts(list);
+        try {
+          if (retained.length > 0) {
+            sessionStorage.setItem(ALERTS_CACHE_KEY, JSON.stringify(retained));
+          } else {
+            sessionStorage.removeItem(ALERTS_CACHE_KEY);
+          }
+        } catch {
+          // 캐시 정리에 실패해도 현재 항목 표시와 API 조회는 계속한다.
+        }
+        const found = retained.find((a) => `${a.kind}-${a.id}` === id);
         if (found) {
           setAlert(found);
           return;
