@@ -30,6 +30,21 @@ function downloadFixture() {
   };
 }
 
+function blobMetadataFixture(overrides: Record<string, unknown> = {}) {
+  return {
+    url: "https://public.blob.vercel-storage.com/snapshot.json",
+    downloadUrl: "https://public.blob.vercel-storage.com/snapshot.json?download=1",
+    etag: "etag-1",
+    size: 512,
+    pathname: "safecompass/integrated-shelters.json",
+    uploadedAt: new Date(),
+    contentType: "application/json",
+    contentDisposition: "attachment",
+    cacheControl: "public, max-age=60",
+    ...overrides,
+  };
+}
+
 afterEach(() => {
   if (ORIGINAL_BLOB_TOKEN === undefined) delete process.env.BLOB_READ_WRITE_TOKEN;
   else process.env.BLOB_READ_WRITE_TOKEN = ORIGINAL_BLOB_TOKEN;
@@ -46,8 +61,10 @@ describe("통합대피소 JSON 스냅샷", () => {
       url: "https://public.blob.vercel-storage.com/safecompass/integrated-shelters.json",
       downloadUrl: "https://public.blob.vercel-storage.com/safecompass/integrated-shelters.json?download=1",
     });
+    headMock.mockResolvedValue(blobMetadataFixture());
 
-    const { saveShelterSnapshot, SHELTER_SNAPSHOT_PATHNAME } = await import("./shelterSnapshot");
+    const { saveShelterSnapshot, getShelterSnapshotSummary, SHELTER_SNAPSHOT_PATHNAME } =
+      await import("./shelterSnapshot");
     const summary = await saveShelterSnapshot(downloadFixture());
 
     expect(SHELTER_SNAPSHOT_PATHNAME).toBe("safecompass/integrated-shelters.json");
@@ -58,6 +75,9 @@ describe("통합대피소 JSON 스냅샷", () => {
     expect(JSON.parse(body)).toMatchObject({ schemaVersion: 1, source: "DSSP-IF-10941" });
     expect(body).not.toContain("blob-secret");
     expect(options).toMatchObject({ access: "public", allowOverwrite: true, addRandomSuffix: false });
+
+    // 저장 직후 상태 조회는 방금 저장한 메모리 저장본을 재사용하므로 본문을 다시 내려받지 않는다
+    await expect(getShelterSnapshotSummary()).resolves.toMatchObject({ validCount: 1 });
   });
 
   it("빈 배열이나 건수 불일치 JSON은 저장 전에 거부한다", async () => {
@@ -78,23 +98,53 @@ describe("통합대피소 JSON 스냅샷", () => {
   it("Blob JSON을 검증해 읽고 메타데이터 요약을 반환한다", async () => {
     process.env.BLOB_READ_WRITE_TOKEN = "blob-secret";
     const stored = { schemaVersion: 1 as const, ...downloadFixture() };
-    headMock.mockResolvedValue({
-      url: "https://public.blob.vercel-storage.com/snapshot.json",
-      downloadUrl: "https://public.blob.vercel-storage.com/snapshot.json?download=1",
-      etag: "etag-1",
-      size: 512,
-      pathname: "safecompass/integrated-shelters.json",
-      uploadedAt: new Date(),
-      contentType: "application/json",
-      contentDisposition: "attachment",
-      cacheControl: "public, max-age=60",
-    });
+    headMock.mockResolvedValue(blobMetadataFixture());
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(stored))));
 
     const { getShelterSnapshotSummary } = await import("./shelterSnapshot");
     const result = await getShelterSnapshotSummary();
 
     expect(result).toMatchObject({ storage: "vercel-blob", size: 512, validCount: 1 });
+  });
+
+  it("저장본 etag가 그대로면 JSON 본문을 다시 내려받지 않고 메모리 저장본을 계속 쓴다", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "blob-secret";
+    const stored = { schemaVersion: 1 as const, ...downloadFixture() };
+    headMock.mockResolvedValue(blobMetadataFixture());
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify(stored)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getShelterSnapshotSummary, loadShelterSnapshot } = await import("./shelterSnapshot");
+
+    await loadShelterSnapshot(); // 최초 1회만 전체 JSON을 읽는다
+    await loadShelterSnapshot(); // 재검사 간격 안에서는 저장소 확인 없이 메모리 저장본 사용
+    const result = await getShelterSnapshotSummary(); // 상태 조회는 etag만 대조
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(headMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ storage: "vercel-blob", validCount: 1 });
+  });
+
+  it("관리자가 새로 받아 etag가 바뀐 경우에만 새 JSON을 읽는다", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = "blob-secret";
+    const first = { schemaVersion: 1 as const, ...downloadFixture() };
+    const second = { ...first, fetchedAt: "2026-07-15T10:00:00.000Z" };
+    headMock
+      .mockResolvedValueOnce(blobMetadataFixture({ etag: "etag-1" }))
+      .mockResolvedValueOnce(blobMetadataFixture({ etag: "etag-2", size: 640 }));
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(first)))
+      .mockResolvedValueOnce(new Response(JSON.stringify(second)));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { getShelterSnapshotSummary, loadShelterSnapshot } = await import("./shelterSnapshot");
+
+    await loadShelterSnapshot();
+    const result = await getShelterSnapshotSummary();
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ fetchedAt: "2026-07-15T10:00:00.000Z", size: 640 });
   });
 
   it("Vercel Blob의 실제 미존재 오류를 저장본 없음으로 처리한다", async () => {

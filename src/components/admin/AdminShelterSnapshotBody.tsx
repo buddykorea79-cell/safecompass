@@ -74,7 +74,8 @@ export default function AdminShelterSnapshotBody() {
           <div>
             <h2 className="text-sm font-bold text-slate-700">통합대피소 JSON 저장</h2>
             <p className="mt-0.5 text-[11px] leading-relaxed text-slate-400">
-              DSSP-IF-10941 전체 자료를 관리자 요청 때 한 번 수집합니다. 지도는 이 저장본만 조회합니다.
+              원본 API(DSSP-IF-10941)는 &lsquo;새로 받기&rsquo;를 누를 때만 한 번 호출합니다. 다시 받기 전까지 앱은
+              저장된 JSON만 계속 사용합니다.
             </p>
           </div>
         </div>

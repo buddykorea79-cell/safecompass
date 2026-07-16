@@ -56,12 +56,11 @@ export async function GET(req: NextRequest) {
       radiusMeters,
     });
   }
-  const stale = Date.now() - new Date(snapshot.fetchedAt).getTime() > 48 * 60 * 60 * 1000;
+  // 저장본은 관리자가 '새로 받기'를 다시 실행하기 전까지 기한 없이 사용한다.
   logApiCall({
     provider: "safetydata",
     endpoint: "getNearbyShelters:snapshot",
     ok: true,
-    detail: stale ? "통합대피소 JSON이 48시간보다 오래되었습니다" : undefined,
     durationMs: Date.now() - start,
   });
 
@@ -77,8 +76,6 @@ export async function GET(req: NextRequest) {
   return NextResponse.json({
     shelters,
     fallback: false,
-    stale,
-    message: stale ? "저장된 통합대피소 JSON이 48시간보다 오래되었습니다" : undefined,
     source: "DSSP-IF-10941",
     snapshotFetchedAt: snapshot.fetchedAt,
     radiusMeters,

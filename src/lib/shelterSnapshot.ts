@@ -9,7 +9,10 @@ export const SHELTER_SNAPSHOT_PATHNAME = "safecompass/integrated-shelters.json";
 export const MISSING_SHELTER_SNAPSHOT_MESSAGE =
   "통합대피소 JSON이 없습니다. SAFETYDATA_SERVICE10941_KEY와 BLOB_READ_WRITE_TOKEN을 설정한 뒤 관리자 페이지에서 '새로 받기'를 실행해 주세요.";
 const LOCAL_SNAPSHOT_PATH = path.join(process.cwd(), "data", "runtime", "integrated-shelters.json");
-const MEMORY_CACHE_TTL_MS = 5 * 60 * 1000;
+// 저장본은 관리자가 '새로 받기'를 누를 때만 바뀐다. 원본 API를 다시 부르지 않도록
+// 메모리에 올려 둔 JSON을 계속 쓰고, 다른 서버 인스턴스에서 교체된 저장본만
+// 이 간격으로 etag/수정시각을 대조해 감지한다. 내용이 같으면 다시 내려받지 않는다.
+const REVALIDATE_INTERVAL_MS = 5 * 60 * 1000;
 
 export interface ShelterSnapshot {
   schemaVersion: 1;
@@ -34,7 +37,16 @@ export interface ShelterSnapshotSummary {
   downloadUrl: string | null;
 }
 
-let memoryCache: { snapshot: ShelterSnapshot; expiresAt: number } | null = null;
+interface MemoryCache {
+  snapshot: ShelterSnapshot;
+  storage: ShelterSnapshotSummary["storage"];
+  version: string;
+  checkedAt: number;
+  size: number;
+  downloadUrl: string | null;
+}
+
+let memoryCache: MemoryCache | null = null;
 
 function isMissingSnapshotError(error: unknown): boolean {
   const candidate = error as {
@@ -93,57 +105,91 @@ function makeSnapshot(download: IntegratedShelterDownload): ShelterSnapshot {
   return validateShelterSnapshot({ schemaVersion: 1, ...download });
 }
 
-function summary(
-  snapshot: ShelterSnapshot,
-  storage: ShelterSnapshotSummary["storage"],
-  size: number,
-  downloadUrl: string | null
-): ShelterSnapshotSummary {
+function summary(cache: MemoryCache): ShelterSnapshotSummary {
   return {
-    storage,
-    pathname: storage === "vercel-blob" ? SHELTER_SNAPSHOT_PATHNAME : LOCAL_SNAPSHOT_PATH,
-    fetchedAt: snapshot.fetchedAt,
-    rawCount: snapshot.rawCount,
-    validCount: snapshot.validCount,
-    skippedCount: snapshot.skippedCount,
-    typeCounts: snapshot.typeCounts,
-    size,
-    downloadUrl,
+    storage: cache.storage,
+    pathname: cache.storage === "vercel-blob" ? SHELTER_SNAPSHOT_PATHNAME : LOCAL_SNAPSHOT_PATH,
+    fetchedAt: cache.snapshot.fetchedAt,
+    rawCount: cache.snapshot.rawCount,
+    validCount: cache.snapshot.validCount,
+    skippedCount: cache.snapshot.skippedCount,
+    typeCounts: cache.snapshot.typeCounts,
+    size: cache.size,
+    downloadUrl: cache.downloadUrl,
   };
 }
 
-async function loadFromBlob(): Promise<{ snapshot: ShelterSnapshot; metadata: Awaited<ReturnType<typeof head>> }> {
-  const metadata = await head(SHELTER_SNAPSHOT_PATHNAME, { token: env.blobReadWriteToken });
-  const response = await fetch(`${metadata.url}?v=${encodeURIComponent(metadata.etag)}`, {
+type BlobMetadata = Awaited<ReturnType<typeof head>>;
+
+function blobVersion(metadata: BlobMetadata): string {
+  return String(metadata.etag ?? `${metadata.size}:${metadata.uploadedAt}`);
+}
+
+function localVersion(stats: { mtimeMs: number; size: number }): string {
+  return `${stats.mtimeMs}:${stats.size}`;
+}
+
+async function downloadBlobSnapshot(metadata: BlobMetadata): Promise<ShelterSnapshot> {
+  const response = await fetch(`${metadata.url}?v=${encodeURIComponent(blobVersion(metadata))}`, {
     cache: "no-store",
     signal: AbortSignal.timeout(15_000),
   });
   if (!response.ok) throw new Error(`통합대피소 JSON 저장소 응답 오류: HTTP ${response.status}`);
-  const snapshot = validateShelterSnapshot(await response.json());
-  return { snapshot, metadata };
+  return validateShelterSnapshot(await response.json());
 }
 
-async function loadFromLocalFile(): Promise<{ snapshot: ShelterSnapshot; size: number }> {
-  const [raw, stats] = await Promise.all([
-    fs.readFile(LOCAL_SNAPSHOT_PATH, "utf8"),
-    fs.stat(LOCAL_SNAPSHOT_PATH),
-  ]);
-  return { snapshot: validateShelterSnapshot(JSON.parse(raw)), size: stats.size };
+// 저장소의 버전(etag/수정시각)만 가볍게 대조하고, 저장본이 실제로 교체된 경우에만
+// JSON 전체를 다시 읽는다. 그 외에는 메모리에 있는 저장본을 그대로 쓴다.
+async function resolveCache(forceCheck: boolean): Promise<MemoryCache> {
+  const now = Date.now();
+  if (memoryCache && !forceCheck && now - memoryCache.checkedAt < REVALIDATE_INTERVAL_MS) {
+    return memoryCache;
+  }
+
+  if (env.blobReadWriteToken) {
+    const metadata = await head(SHELTER_SNAPSHOT_PATHNAME, { token: env.blobReadWriteToken });
+    const version = blobVersion(metadata);
+    if (memoryCache?.storage === "vercel-blob" && memoryCache.version === version) {
+      memoryCache = { ...memoryCache, checkedAt: now, size: metadata.size, downloadUrl: metadata.downloadUrl };
+      return memoryCache;
+    }
+    const snapshot = await downloadBlobSnapshot(metadata);
+    memoryCache = {
+      snapshot,
+      storage: "vercel-blob",
+      version,
+      checkedAt: now,
+      size: metadata.size,
+      downloadUrl: metadata.downloadUrl,
+    };
+    return memoryCache;
+  }
+
+  const stats = await fs.stat(LOCAL_SNAPSHOT_PATH);
+  const version = localVersion(stats);
+  if (memoryCache?.storage === "local-file" && memoryCache.version === version) {
+    memoryCache = { ...memoryCache, checkedAt: now };
+    return memoryCache;
+  }
+  const raw = await fs.readFile(LOCAL_SNAPSHOT_PATH, "utf8");
+  memoryCache = {
+    snapshot: validateShelterSnapshot(JSON.parse(raw)),
+    storage: "local-file",
+    version,
+    checkedAt: now,
+    size: stats.size,
+    downloadUrl: null,
+  };
+  return memoryCache;
 }
 
 export async function loadShelterSnapshot(): Promise<ShelterSnapshot> {
-  if (memoryCache && memoryCache.expiresAt > Date.now()) return memoryCache.snapshot;
-  let snapshot: ShelterSnapshot;
   try {
-    snapshot = env.blobReadWriteToken
-      ? (await loadFromBlob()).snapshot
-      : (await loadFromLocalFile()).snapshot;
+    return (await resolveCache(false)).snapshot;
   } catch (error) {
     if (isMissingSnapshotError(error)) throw new Error(MISSING_SHELTER_SNAPSHOT_MESSAGE);
     throw error;
   }
-  memoryCache = { snapshot, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS };
-  return snapshot;
 }
 
 export async function saveShelterSnapshot(
@@ -151,7 +197,7 @@ export async function saveShelterSnapshot(
 ): Promise<ShelterSnapshotSummary> {
   const snapshot = makeSnapshot(download);
   const json = JSON.stringify(snapshot);
-  let result: ShelterSnapshotSummary;
+  const size = Buffer.byteLength(json);
 
   if (env.blobReadWriteToken) {
     const blob = await put(SHELTER_SNAPSHOT_PATHNAME, json, {
@@ -162,32 +208,72 @@ export async function saveShelterSnapshot(
       contentType: "application/json; charset=utf-8",
       token: env.blobReadWriteToken,
     });
-    result = summary(snapshot, "vercel-blob", Buffer.byteLength(json), blob.downloadUrl);
-  } else {
-    if (process.env.NODE_ENV === "production") {
-      throw new Error("BLOB_READ_WRITE_TOKEN 미설정 — 운영 환경에 통합대피소 JSON을 저장할 수 없습니다");
+    // 방금 저장한 버전(etag)을 기억해 두면 이후 상태 조회에서 같은 파일을 다시
+    // 내려받지 않는다. 확인에 실패해도 다음 조회에서 새로 읽으므로 저장은 성공이다.
+    try {
+      const metadata = await head(SHELTER_SNAPSHOT_PATHNAME, { token: env.blobReadWriteToken });
+      memoryCache = {
+        snapshot,
+        storage: "vercel-blob",
+        version: blobVersion(metadata),
+        checkedAt: Date.now(),
+        size: metadata.size,
+        downloadUrl: metadata.downloadUrl,
+      };
+    } catch {
+      memoryCache = null;
     }
-    await fs.mkdir(path.dirname(LOCAL_SNAPSHOT_PATH), { recursive: true });
-    const tempPath = `${LOCAL_SNAPSHOT_PATH}.${process.pid}.${Date.now()}.tmp`;
-    await fs.writeFile(tempPath, json, "utf8");
-    await fs.rename(tempPath, LOCAL_SNAPSHOT_PATH);
-    result = summary(snapshot, "local-file", Buffer.byteLength(json), null);
+    return {
+      storage: "vercel-blob",
+      pathname: SHELTER_SNAPSHOT_PATHNAME,
+      fetchedAt: snapshot.fetchedAt,
+      rawCount: snapshot.rawCount,
+      validCount: snapshot.validCount,
+      skippedCount: snapshot.skippedCount,
+      typeCounts: snapshot.typeCounts,
+      size,
+      downloadUrl: blob.downloadUrl,
+    };
   }
 
-  memoryCache = { snapshot, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS };
-  return result;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("BLOB_READ_WRITE_TOKEN 미설정 — 운영 환경에 통합대피소 JSON을 저장할 수 없습니다");
+  }
+  await fs.mkdir(path.dirname(LOCAL_SNAPSHOT_PATH), { recursive: true });
+  const tempPath = `${LOCAL_SNAPSHOT_PATH}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, json, "utf8");
+  await fs.rename(tempPath, LOCAL_SNAPSHOT_PATH);
+  try {
+    const stats = await fs.stat(LOCAL_SNAPSHOT_PATH);
+    memoryCache = {
+      snapshot,
+      storage: "local-file",
+      version: localVersion(stats),
+      checkedAt: Date.now(),
+      size: stats.size,
+      downloadUrl: null,
+    };
+  } catch {
+    memoryCache = null;
+  }
+  return {
+    storage: "local-file",
+    pathname: LOCAL_SNAPSHOT_PATH,
+    fetchedAt: snapshot.fetchedAt,
+    rawCount: snapshot.rawCount,
+    validCount: snapshot.validCount,
+    skippedCount: snapshot.skippedCount,
+    typeCounts: snapshot.typeCounts,
+    size,
+    downloadUrl: null,
+  };
 }
 
 export async function getShelterSnapshotSummary(): Promise<ShelterSnapshotSummary | null> {
   try {
-    if (env.blobReadWriteToken) {
-      const { snapshot, metadata } = await loadFromBlob();
-      memoryCache = { snapshot, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS };
-      return summary(snapshot, "vercel-blob", metadata.size, metadata.downloadUrl);
-    }
-    const { snapshot, size } = await loadFromLocalFile();
-    memoryCache = { snapshot, expiresAt: Date.now() + MEMORY_CACHE_TTL_MS };
-    return summary(snapshot, "local-file", size, null);
+    // 관리자 상태 조회는 항상 저장소 버전을 대조해 최신 저장 상태를 보여 준다.
+    // 버전이 같으면 메타데이터만 확인하고 JSON 본문은 다시 내려받지 않는다.
+    return summary(await resolveCache(true));
   } catch (error) {
     if (isMissingSnapshotError(error)) return null;
     throw error;
